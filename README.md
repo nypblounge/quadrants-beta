@@ -1,0 +1,91 @@
+# Quadrants Beta Online v2.0 Experimental
+
+GitHub Pages + Firebase Realtime Database multiplayer build.
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+## New in v2.0
+
+- Added Dharok's Greataxe unit with missing-HP max-hit scaling.
+- Added Capture the Flag game mode.
+- Added map templates: Classic Quadrants, River Cross, Fortress Mid, Open Field.
+- Added CTF score tracking and flag-carrier display.
+- Added fight sidebar flag scores and kill feed.
+- Added spectator team option.
+- Added post-game share code copy button.
+- Added build path preview from each player's base.
+- Added attack range preview on unit hover.
+- Added richer unit hover browser tooltips.
+- Added real max-hit preview in the shop.
+- Added more aggro rules: highest damage dealer and lowest defence.
+- Expanded post-game stats with unit/base damage and accuracy.
+
+## Deploy
+
+Push to `main`. The included GitHub Actions workflow builds and deploys to GitHub Pages.
+
+
+## v2.1 quick fixes
+
+- Fixed Buy Phase crash caused by an accidental Spectator button inside unit stat summaries.
+- Build path preview now only highlights the active player's own/neutral visible roads and will not reveal connected enemy paths.
+- Replaced Dharok's asset with the smaller uploaded PNG.
+- Added a favicon to avoid the browser 404 noise.
+
+## v2.2 patch notes
+
+- Added a clearer flag icon overlay on units that are carrying an enemy flag.
+- In Capture the Flag, units now prioritize killing the enemy unit carrying their own team's flag.
+- Buy Phase now opens as a larger overlay over the map instead of being squeezed into the right sidebar.
+- Attack range preview now respects line of sight and does not highlight walls/void/empty blocking tiles.
+- Build path preview is stricter about not traversing or highlighting enemy base/path information.
+
+
+## v2.3 changes
+
+- Buy phase shop cards are sorted by cost, then name.
+- Buy phase cards show attack speed in ticks and seconds.
+- Ancient Staff shop card now explicitly shows the 3x3 splash passive and range accuracy penalty.
+- Capture the Flag scoring now requires the carrier to return onto their own base tile. Touching beside the home base no longer scores.
+- Flag carriers path directly onto their own base tile while carrying a flag.
+
+
+## v2.4 patch notes
+
+- Added Dharok's Greataxe to the Buy Phase unit roster.
+- Fixed Capture the Flag so each team's flag can only be carried by one living unit at a time.
+- Flags reset to home when the carrier dies or loses respawn eligibility.
+
+
+## v2.7 Resource Patch
+
+- Added buildable Trees and Rocks tiles. Trees block pathing and line of sight; Rocks block pathing but not line of sight.
+- Added Woodcutter and Miner units. They target enemy Trees/Rocks, clear them into dirt roads for 30 seconds, then the resource regrows.
+- Added 20x20 and 25x25 map sizes.
+
+## v2.8 resource targeting fixes
+
+- Woodcutter and Miner default resource targeting is stronger.
+- Enemy resource ownership is recalculated from map quadrant data when needed.
+- Trees and rocks now have 30 HP once chopping/mining starts.
+- Resource health bars display on damaged trees/rocks.
+- Fight simulation syncs board resource HP/clearing/regrowth back to Firebase during combat.
+
+## v2.9 patch notes
+
+- Empty/void tiles are filled for free with random Water, Trees, or Rocks when Build Phase is finalized.
+- Woodcutters and Miners can manually target a specific enemy Tree/Rock with the Select tile/unit/resource command.
+- The selected unit's current target is highlighted on the board.
+- Tree/Rock regrow timers now scale upward each time the same tile is cleared.
+
+## v3.1 patch notes
+
+- Auto Woodcutter/Miner resource targeting now only selects reachable enemy-zone Trees/Rocks.
+- Manual skiller targeting can now select matching Trees/Rocks in any zone, including your own team zone.
+- Added Home teleport for selected units: channels for 5 seconds, returns the unit to its base, restores the unit's previous orders, and is interrupted by incoming attacks.
+- Selected unit target preview now highlights Home teleport destinations and still highlights manual/auto resource targets.
