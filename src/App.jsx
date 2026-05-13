@@ -1,5 +1,5 @@
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getDatabase,
@@ -18,7 +18,7 @@ import "./styles.css";
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3 };
+const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
 const BASE_ZONE_SIZE = 3;
 const LARGE_BASE_ZONE_SIZE = 5;
 const BASE_ZONE_INSET = 1;
@@ -27,6 +27,9 @@ const TICK_SECONDS = 0.6;
 const MOVE_EVERY = 0.75;
 const RESPAWN_BASE_TIME = 5;
 const SPLAT_TTL = 2.4;
+const SPAWN_EFFECT_TTL = 8.0;
+const SPAWN_WARNING_SECONDS = 10.0;
+const GROUND_ITEM_TTL = 60;
 const MAX_LEVEL = 99;
 const BUILD_PHASE_GOLD_RESERVE = 10;
 const DEFEND_RADIUS = 4;
@@ -51,7 +54,27 @@ const EQUIPMENT_SLOT_META = {
   ring: { name: "Ring", image: "ring_slot.png" },
 };
 const EMPTY_GEAR_BONUSES = { stab: 0, slash: 0, crush: 0, magic: 0, range: 0, defenceStab: 0, defenceSlash: 0, defenceCrush: 0, defenceMagic: 0, defenceRange: 0, meleeStrength: 0, rangedStrength: 0, magicDamage: 0, prayer: 0 };
+const NPC_SPAWN_INTERVAL = 60;
+const GOBLIN_LOOT_TABLE = [
+  { type: "gold", min: 1, max: 10, weight: 80 },
+  { type: "item", itemId: "bronze_med_helm", weight: 20 },
+];
+const GOBLIN_ALWAYS_DROP_ITEMS = ["bones"];
+const HILL_GIANT_DROP_TABLE = [
+  { type: "item", itemId: "bronze_platelegs", chance: 1 / 10 },
+  { type: "gold", min: 1, max: 25, chance: 1 / 5 },
+  { type: "item", itemId: "logs", min: 1, max: 5, chance: 1 / 20 },
+  { type: "item", itemId: "ore", min: 1, max: 5, chance: 1 / 20 },
+];
+const HILL_GIANT_ALWAYS_DROP_ITEMS = [{ itemId: "big_bones", qty: 1 }];
 const GEAR_ITEMS = {
+  cape_of_skulls: { id: "cape_of_skulls", name: "Cape of Skulls", slot: "cape", cost: 50, icon: "cape_of_skulls.png", bonuses: { defenceStab: 1, defenceSlash: 1, defenceCrush: 1, defenceMagic: 1, defenceRange: 1 } },
+  bronze_med_helm: { id: "bronze_med_helm", name: "Bronze Med Helm", slot: "helmet", cost: 5, icon: "bronze_med_helm.png", bonuses: { defenceStab: 1, defenceSlash: 1, defenceCrush: 1, defenceRange: 1 } },
+  bones: { id: "bones", name: "Bones", slot: "none", cost: 1, sellValue: 0, icon: "bones.png", stackable: true, consumable: "prayerXp", prayerXp: 3, bonuses: {} },
+  big_bones: { id: "big_bones", name: "Big Bones", slot: "none", cost: 15, sellValue: 15, icon: "big_bones.png", stackable: true, consumable: "prayerXp", prayerXp: 4.5, bonuses: {} },
+  logs: { id: "logs", name: "Logs", slot: "none", cost: 2, sellValue: 2, icon: "logs.png", stackable: true, bonuses: {} },
+  ore: { id: "ore", name: "Iron Ore", slot: "none", cost: 4, sellValue: 4, icon: "ore.png", stackable: true, bonuses: {} },
+  bronze_platelegs: { id: "bronze_platelegs", name: "Bronze Platelegs", slot: "legs", cost: 80, icon: "bronze_platelegs.png", bonuses: { defenceStab: 1, defenceSlash: 1, defenceCrush: 1, defenceMagic: 1, defenceRange: 1 } },
   bronze_sword: { id: "bronze_sword", name: "Bronze Sword", slot: "weapon", cost: 8, icon: "weapon_slot.png", bonuses: { slash: 6, meleeStrength: 4 } },
   iron_scimitar: { id: "iron_scimitar", name: "Iron Scimitar", slot: "weapon", cost: 18, icon: "weapon_slot.png", bonuses: { slash: 13, meleeStrength: 11 } },
   oak_shortbow: { id: "oak_shortbow", name: "Oak Shortbow", slot: "weapon", cost: 14, icon: "weapon_slot.png", bonuses: { range: 12, rangedStrength: 8 } },
@@ -68,14 +91,22 @@ const GEAR_ITEMS = {
   bronze_arrows: { id: "bronze_arrows", name: "Bronze Arrows", slot: "ammo", cost: 8, icon: "ammo_slot.png", bonuses: { range: 2, rangedStrength: 5 } },
   recoil_ring: { id: "recoil_ring", name: "Ring of Recoil", slot: "ring", cost: 18, icon: "ring_slot.png", bonuses: { defenceStab: 3, defenceSlash: 3, defenceCrush: 3, defenceMagic: 3, defenceRange: 3, meleeStrength: 2, rangedStrength: 2, magicDamage: 1 } },
 };
-const SHOP_GEAR_ITEM_IDS = [];
+const SHOP_GEAR_ITEM_IDS = ["cape_of_skulls"];
 const DEFAULT_TWO_HANDED_STYLES = new Set(["dinhs_bulwark", "noxious_halberd", "dragon_claws", "dharoks", "heavy_ballista", "dark_bow_pure"]);
 const RESOURCE_HITPOINTS = { tree: 30, rock: 30 };
-const ALL_TEAMS = ["red", "green", "blue", "purple"];
-const TEAM_ORDER = { red: 0, green: 1, blue: 2, purple: 3 };
+const CLASSIC_TEAMS = ["red", "green", "blue", "purple"];
+const EIGHT_PLAYER_TEAMS = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "cyan"];
+const ALL_TEAMS = Array.from(new Set([...CLASSIC_TEAMS, ...EIGHT_PLAYER_TEAMS]));
+const TEAM_ORDER = Object.fromEntries(ALL_TEAMS.map((team, index) => [team, index]));
+const TEAM_MODE_ALLIANCES = [
+  { id: "warm", name: "Team 1", emoji: "🟨", color: "#facc15" },
+  { id: "cool", name: "Team 2", emoji: "🟦", color: "#38bdf8" },
+];
+const DEFAULT_TEAM_ALLIANCES = { red: "warm", orange: "warm", yellow: "warm", green: "warm", blue: "cool", purple: "cool", pink: "cool", cyan: "cool" };
 const GAME_MODES = {
   classic: { name: "Classic Base Siege", description: "Destroy enemy bases and clean up remaining units." },
   capture_flag: { name: "Capture the Flag", description: "Touch an enemy base to grab its flag, then return to your base to score." },
+  king_hill: { name: "King of the Hill", description: "Control the center hill uncontested until your team reaches the hold timer." },
 };
 const MAP_TEMPLATES = {
   classic: { name: "Classic Quadrants" },
@@ -86,9 +117,14 @@ const MAP_TEMPLATES = {
 
 const TEAM_META = {
   red: { name: "Red", emoji: "🟥", color: "#ef4444", dark: "#7f1d1d" },
+  orange: { name: "Orange", emoji: "🟧", color: "#f97316", dark: "#7c2d12" },
+  yellow: { name: "Yellow", emoji: "🟨", color: "#facc15", dark: "#713f12" },
   green: { name: "Green", emoji: "🟩", color: "#22c55e", dark: "#064e3b" },
   blue: { name: "Blue", emoji: "🟦", color: "#38bdf8", dark: "#0c4a6e" },
   purple: { name: "Purple", emoji: "🟪", color: "#a855f7", dark: "#581c87" },
+  pink: { name: "Pink", emoji: "🌸", color: "#ec4899", dark: "#831843" },
+  cyan: { name: "Cyan", emoji: "🔷", color: "#06b6d4", dark: "#164e63" },
+  npc: { name: "NPC", emoji: "⬜", color: "#ffffff", dark: "#ffffff" },
 };
 
 const PHASES = {
@@ -106,6 +142,33 @@ const BASE = import.meta.env.BASE_URL || "/";
 const asset = (path) => `${BASE}assets/${path}`;
 
 const STYLE = {
+  goblin: {
+    name: "Goblin",
+    file: "goblin.png",
+    combatType: "melee",
+    tier: 0,
+    cost: 0,
+    range: 1,
+    baseDamage: 3,
+    attackTicks: 3,
+    cooldown: 3 * TICK_SECONDS,
+    baseStats: { attack: 10, strength: 10, defence: 10, magic: 10, range: 1, prayer: 1, hitpoints: 30 },
+    npc: true,
+  },
+  hill_giant: {
+    name: "Hill Giant",
+    file: "hill_giant.png",
+    combatType: "melee",
+    tier: 0,
+    cost: 0,
+    range: 1,
+    size: 2,
+    baseDamage: 9,
+    attackTicks: 5,
+    cooldown: 5 * TICK_SECONDS,
+    baseStats: { attack: 30, strength: 30, defence: 30, magic: 1, range: 1, prayer: 1, hitpoints: 100 },
+    npc: true,
+  },
   flag_weapon: {
     name: "Flag",
     file: "melee.png",
@@ -374,11 +437,89 @@ function ensurePlayerId() {
   return id;
 }
 
-function activeTeams(setup) {
-  const count = Number(setup.players);
-  if (count === 4) return [...ALL_TEAMS];
+function clampPlayerCount(value) {
+  return Math.max(2, Math.min(8, Number(value) || 2));
+}
+
+function usesArenaLayout(setup = DEFAULT_SETUP) {
+  return clampPlayerCount(setup?.players) >= 5;
+}
+
+function activeTeams(setup = DEFAULT_SETUP) {
+  const count = clampPlayerCount(setup?.players);
+  if (count >= 5) return EIGHT_PLAYER_TEAMS.slice(0, count);
+  if (count === 4) return [...CLASSIC_TEAMS];
   if (count === 3) return ["red", "green", "blue"];
   return ["red", "blue"];
+}
+
+function validAllianceIds() {
+  return TEAM_MODE_ALLIANCES.map((alliance) => alliance.id);
+}
+
+function normalizeTeamAlliances(setup = DEFAULT_SETUP) {
+  const valid = new Set(validAllianceIds());
+  const provided = setup?.alliances || {};
+  const out = {};
+  for (const team of activeTeams(setup || DEFAULT_SETUP)) {
+    const picked = provided?.[team];
+    out[team] = valid.has(picked) ? picked : (DEFAULT_TEAM_ALLIANCES[team] || TEAM_MODE_ALLIANCES[0].id);
+  }
+  return out;
+}
+
+function allianceMeta(allianceId) {
+  return TEAM_MODE_ALLIANCES.find((alliance) => alliance.id === allianceId) || TEAM_MODE_ALLIANCES[0];
+}
+
+function teamAllianceLabel(team, setup = DEFAULT_SETUP) {
+  const alliance = allianceMeta(normalizeTeamAlliances(setup)[team]);
+  return `${alliance.emoji} ${alliance.name}`;
+}
+
+function goblinLootChanceRows() {
+  const total = GOBLIN_LOOT_TABLE.reduce((sum, row) => sum + Number(row.weight || 0), 0) || 1;
+  return GOBLIN_LOOT_TABLE.map((row) => ({
+    ...row,
+    chance: Number(row.weight || 0) / total,
+  }));
+}
+
+function chanceLabel(chance) {
+  const pct = Math.round((Number(chance) || 0) * 100);
+  if (pct === 5) return "1/20 (5%)";
+  if (pct === 10) return "1/10 (10%)";
+  if (pct === 20) return "1/5 (20%)";
+  if (pct === 25) return "1/4 (25%)";
+  if (pct === 50) return "1/2 (50%)";
+  return `${pct}%`;
+}
+
+function hillGiantLootChanceRows() {
+  return HILL_GIANT_DROP_TABLE.map((row) => ({ ...row, chance: Number(row.chance || 0) }));
+}
+
+function npcSpawnAmountFor(setup, style) {
+  if (style === "goblin") return Math.max(0, Math.min(10, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount) || 0));
+  if (style === "hill_giant") return Math.max(0, Math.min(5, Number(setup.hillGiantSpawnAmount) || 0));
+  return 0;
+}
+
+function npcSpawnIntervalFor(setup, style) {
+  if (style === "goblin") return Math.max(10, Math.min(600, Number(setup.goblinSpawnInterval ?? setup.npcSpawnInterval) || DEFAULT_SETUP.goblinSpawnInterval));
+  if (style === "hill_giant") return Math.max(10, Math.min(600, Number(setup.hillGiantSpawnInterval) || DEFAULT_SETUP.hillGiantSpawnInterval));
+  return NPC_SPAWN_INTERVAL;
+}
+
+function npcSpawnConfigs(setup = DEFAULT_SETUP) {
+  return [
+    { style: "goblin", amount: npcSpawnAmountFor(setup, "goblin"), interval: npcSpawnIntervalFor(setup, "goblin") },
+    { style: "hill_giant", amount: npcSpawnAmountFor(setup, "hill_giant"), interval: npcSpawnIntervalFor(setup, "hill_giant") },
+  ].filter((cfg) => cfg.amount > 0 && STYLE[cfg.style]?.npc);
+}
+
+function initialNpcSpawnSchedule(setup = DEFAULT_SETUP) {
+  return Object.fromEntries(npcSpawnConfigs(setup).map((cfg) => [cfg.style, cfg.interval]));
 }
 
 function sizeOf(setup) {
@@ -395,25 +536,63 @@ function baseZoneSizeFor(setup) {
   return sizeOf(setup || DEFAULT_SETUP) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE;
 }
 
+function eightPlayerBasePositions(size, zone) {
+  const inset = Math.min(Math.floor(zone / 2), Math.max(0, Math.floor((size - 1) / 2)));
+  const far = size - 1 - inset;
+  const mid = midOf(size);
+  return {
+    red: { row: inset, col: inset },
+    orange: { row: inset, col: mid },
+    yellow: { row: inset, col: far },
+    green: { row: mid, col: inset },
+    blue: { row: mid, col: far },
+    purple: { row: far, col: inset },
+    pink: { row: far, col: mid },
+    cyan: { row: far, col: far },
+  };
+}
+
 function baseOf(team, sizeOrSetup) {
+  const setup = typeof sizeOrSetup === "number" ? null : sizeOrSetup;
   const size = typeof sizeOrSetup === "number" ? sizeOrSetup : sizeOf(sizeOrSetup);
   const zone = typeof sizeOrSetup === "number" ? (size >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE) : baseZoneSizeFor(sizeOrSetup);
   const inset = Math.min(Math.floor(zone / 2), Math.max(0, Math.floor((size - 1) / 2)));
   const far = size - 1 - inset;
+  if (setup && usesArenaLayout(setup)) {
+    const picked = eightPlayerBasePositions(size, zone)[team] || eightPlayerBasePositions(size, zone).red;
+    return { ...picked, team };
+  }
   if (team === "red") return { row: inset, col: inset, team };
   if (team === "green") return { row: inset, col: far, team };
   if (team === "blue") return { row: far, col: far, team };
-  return { row: far, col: inset, team };
+  if (team === "purple") return { row: far, col: inset, team };
+  const picked = eightPlayerBasePositions(size, zone)[team] || eightPlayerBasePositions(size, zone).red;
+  return { ...picked, team };
+}
+
+function clampZoneStart(center, zone, size) {
+  return Math.max(0, Math.min(size - zone, center - Math.floor(zone / 2)));
 }
 
 function baseZoneBounds(team, sizeOrSetup) {
+  const setup = typeof sizeOrSetup === "number" ? null : sizeOrSetup;
   const size = typeof sizeOrSetup === "number" ? sizeOrSetup : sizeOf(sizeOrSetup);
   const zone = Math.min(typeof sizeOrSetup === "number" ? (size >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE) : baseZoneSizeFor(sizeOrSetup), size);
   const max = size - 1;
+  if (setup && usesArenaLayout(setup)) {
+    const base = baseOf(team, setup);
+    const r0 = clampZoneStart(base.row, zone, size);
+    const c0 = clampZoneStart(base.col, zone, size);
+    return { r0, r1: r0 + zone - 1, c0, c1: c0 + zone - 1 };
+  }
   if (team === "red") return { r0: 0, r1: zone - 1, c0: 0, c1: zone - 1 };
   if (team === "green") return { r0: 0, r1: zone - 1, c0: max - zone + 1, c1: max };
   if (team === "blue") return { r0: max - zone + 1, r1: max, c0: max - zone + 1, c1: max };
-  return { r0: max - zone + 1, r1: max, c0: 0, c1: zone - 1 };
+  if (team === "purple") return { r0: max - zone + 1, r1: max, c0: 0, c1: zone - 1 };
+  const base = baseOf(team, { ...DEFAULT_SETUP, players: 8, gridSize: size, baseZoneSize: zone });
+  const r0 = clampZoneStart(base.row, zone, size);
+  const c0 = clampZoneStart(base.col, zone, size);
+  return { r0, r1: r0 + zone - 1, c0, c1: c0 + zone - 1 };
 }
 
 function isInBaseZone(row, col, team, sizeOrSetup) {
@@ -433,6 +612,49 @@ function centerTiles(size) {
     for (let col = mid - CENTER_RADIUS; col <= mid + CENTER_RADIUS; col++) out.push({ row, col });
   }
   return out;
+}
+
+function isHillCell(row, col, setup = DEFAULT_SETUP) {
+  return isCenterCell(row, col, sizeOf(setup));
+}
+
+function hillCenter(setup = DEFAULT_SETUP) {
+  const mid = midOf(sizeOf(setup));
+  return { row: mid, col: mid };
+}
+
+function kothControllerTeam(units, setup = DEFAULT_SETUP) {
+  const teams = activeTeams(setup);
+  const occupants = units.filter((unit) => unit.hp > 0 && teams.includes(unit.team) && isHillCell(unit.row, unit.col, setup));
+  if (!occupants.length) return null;
+  const alliances = new Set(occupants.map((unit) => teamAllianceId(unit.team, setup)));
+  if (alliances.size !== 1) return null;
+  const ranked = teams
+    .map((team) => ({ team, count: occupants.filter((unit) => unit.team === team).length }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.count - a.count || TEAM_ORDER[a.team] - TEAM_ORDER[b.team]);
+  return ranked[0]?.team || null;
+}
+
+function hillOccupants(units, setup = DEFAULT_SETUP) {
+  const teams = activeTeams(setup);
+  return units.filter((unit) => unit.hp > 0 && teams.includes(unit.team) && isHillCell(unit.row, unit.col, setup));
+}
+
+function findHillPath(board, units, unit, setup) {
+  if (isHillCell(unit.row, unit.col, setup)) return null;
+  const size = sizeOf(setup);
+  const candidates = centerTiles(size)
+    .filter((tile) => walkable(board[tile.row]?.[tile.col], setup))
+    .map((tile) => {
+      const occupied = unitOccupies(units, tile.row, tile.col, setup, unit);
+      const path = findPath(board, units, unit, tile, setup, { range: occupied ? 1 : 0, allowTargetCell: !occupied, requireGoal: true });
+      return { tile, occupied, path };
+    })
+    .filter((entry) => entry.path && entry.path.length);
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => Number(a.occupied) - Number(b.occupied) || a.path.length - b.path.length || manhattan(unit, a.tile) - manhattan(unit, b.tile));
+  return candidates[0].path;
 }
 
 function inBounds(row, col, size) {
@@ -473,6 +695,19 @@ function ownerFor(row, col, setup) {
   const teams = activeTeams(setup);
   const mid = midOf(size);
   if (isCenterCell(row, col, size)) return "neutral";
+  if (usesArenaLayout(setup)) {
+    let best = teams[0];
+    let bestDist = Infinity;
+    for (const team of teams) {
+      const base = baseOf(team, setup);
+      const dist = Math.abs(row - base.row) + Math.abs(col - base.col);
+      if (dist < bestDist || (dist === bestDist && (TEAM_ORDER[team] ?? 0) < (TEAM_ORDER[best] ?? 0))) {
+        best = team;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
   if (teams.length === 2) {
     const split = size - 1;
     const sum = row + col;
@@ -543,6 +778,24 @@ function applyMapTemplate(board, setup) {
   return board;
 }
 
+function applyOuterTreeWall(board, setup) {
+  const size = sizeOf(setup);
+  for (let i = 0; i < size; i++) {
+    for (const [row, col] of [[0, i], [size - 1, i], [i, 0], [i, size - 1]]) {
+      if (!inBounds(row, col, size) || isBaseCell(row, col, setup) || isCenterCell(row, col, size)) continue;
+      const cell = board[row][col];
+      if (!cell) continue;
+      cell.type = "tree";
+      cell.resourceDeathCount = cell.resourceDeathCount ?? 0;
+      cell.resourceHp = null;
+      cell.resourceMaxHp = null;
+      cell.regrowType = null;
+      cell.regrowAt = null;
+    }
+  }
+  return board;
+}
+
 function makeBoard(setup = DEFAULT_SETUP) {
   const size = sizeOf(setup);
   const board = Array.from({ length: size }, (_, row) =>
@@ -553,7 +806,7 @@ function makeBoard(setup = DEFAULT_SETUP) {
       type: isStarterRoad(row, col, setup) ? "road" : "empty",
     }))
   );
-  return applyMapTemplate(board, setup);
+  return applyOuterTreeWall(applyMapTemplate(board, setup), setup);
 }
 
 function finalizeBuildTerrain(board, setup = DEFAULT_SETUP) {
@@ -597,13 +850,38 @@ function defaultOrders(setup) {
   const teams = activeTeams(setup);
   const out = {};
   teams.forEach((team, i) => {
-    out[team] = { target: teams[(i + 1) % teams.length] };
+    out[team] = { target: (setup?.gameMode === "king_hill") ? "hill" : teams[(i + 1) % teams.length] };
   });
   return out;
 }
 
+function teamAllianceId(team, setup = DEFAULT_SETUP) {
+  if (!team || team === "npc") return team;
+  if (!setup?.teamMode) return team;
+  return normalizeTeamAlliances(setup)[team] || team;
+}
+
+function areAlliedTeams(a, b, setup = DEFAULT_SETUP) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a === "npc" || b === "npc") return false;
+  return setup?.teamMode && teamAllianceId(a, setup) === teamAllianceId(b, setup);
+}
+
+function areHostileTeams(a, b, setup = DEFAULT_SETUP) {
+  if (!a || !b || a === b) return false;
+  if (a === "npc") return activeTeams(setup).includes(b);
+  if (b === "npc") return activeTeams(setup).includes(a);
+  return !areAlliedTeams(a, b, setup);
+}
+
+function hostileTeamsFor(team, setup = DEFAULT_SETUP) {
+  return activeTeams(setup).filter((other) => areHostileTeams(team, other, setup));
+}
+
 function targetableBaseTeams(bases, setup, selfTeam) {
-  return activeTeams(setup).filter((team) => team !== selfTeam && (bases?.[team]?.hp ?? 0) > 0);
+  if (selfTeam === "npc") return [];
+  return activeTeams(setup).filter((team) => areHostileTeams(selfTeam, team, setup) && (bases?.[team]?.hp ?? 0) > 0);
 }
 
 function pickRandomTarget(unit, candidates) {
@@ -682,6 +960,52 @@ function unitAttackTicks(unit) {
   return STYLE[effectiveAttackStyleId(unit)]?.attackTicks ?? STYLE[unit?.style]?.attackTicks ?? 1;
 }
 
+function unitSize(unitOrStyle) {
+  const styleId = typeof unitOrStyle === "string" ? unitOrStyle : unitOrStyle?.style;
+  return Math.max(1, Number(STYLE[styleId]?.size || 1));
+}
+
+function unitFootprintAt(unitOrStyle, row, col) {
+  const size = unitSize(unitOrStyle);
+  const cells = [];
+  for (let dr = 0; dr < size; dr++) {
+    for (let dc = 0; dc < size; dc++) cells.push({ row: Number(row) + dr, col: Number(col) + dc });
+  }
+  return cells;
+}
+
+function unitFootprint(unit) {
+  return unitFootprintAt(unit, unit?.row ?? 0, unit?.col ?? 0);
+}
+
+function targetFootprint(target) {
+  if (!target) return [];
+  if (target.id && target.style && STYLE[target.style]) return unitFootprint(target);
+  return [{ row: Number(target.row), col: Number(target.col) }];
+}
+
+function pointToTargetDistance(point, target) {
+  const cells = targetFootprint(target);
+  if (!cells.length) return Infinity;
+  return Math.min(...cells.map((cell) => Math.abs(Number(point.row) - cell.row) + Math.abs(Number(point.col) - cell.col)));
+}
+
+function nearestTargetCell(point, target) {
+  const cells = targetFootprint(target);
+  if (!cells.length) return target;
+  return cells.slice().sort((a, b) => (Math.abs(Number(point.row) - a.row) + Math.abs(Number(point.col) - a.col)) - (Math.abs(Number(point.row) - b.row) + Math.abs(Number(point.col) - b.col)))[0];
+}
+
+function unitDistance(a, b) {
+  const aCells = a?.id && a?.style ? unitFootprint(a) : [{ row: Number(a?.row), col: Number(a?.col) }];
+  const bCells = targetFootprint(b);
+  let best = Infinity;
+  for (const ac of aCells) {
+    for (const bc of bCells) best = Math.min(best, Math.abs(ac.row - bc.row) + Math.abs(ac.col - bc.col));
+  }
+  return best;
+}
+
 function grantCombatXp(unit, damage) {
   if (damage <= 0) return;
   const type = combatType(effectiveAttackStyleId(unit));
@@ -744,7 +1068,7 @@ function makeUnit(id, team, style, setup, carried = {}) {
     totalDamage: carried.totalDamage ?? 0,
     kills: carried.kills ?? 0,
     levelsGained: carried.levelsGained ?? 0,
-    name: normalizeUnitName(carried.name, `${STYLE[style].name} ${id}`),
+    name: normalizeUnitName(carried.name, STYLE[style]?.name || "Unit"),
     priority: carried.priority ?? "auto",
     targetOverride: carried.targetOverride ?? defaultUnitTargetOverride(style),
     manualTargetType: carried.manualTargetType ?? null,
@@ -752,6 +1076,7 @@ function makeUnit(id, team, style, setup, carried = {}) {
     manualTargetRow: carried.manualTargetRow ?? null,
     manualTargetCol: carried.manualTargetCol ?? null,
     manualResourceType: carried.manualResourceType ?? null,
+    manualGroundItemId: carried.manualGroundItemId ?? null,
     manualTargetStartedAt: carried.manualTargetStartedAt ?? null,
     manualTargetBlockedSince: carried.manualTargetBlockedSince ?? null,
     homeTeleportStartedAt: carried.homeTeleportStartedAt ?? null,
@@ -763,6 +1088,7 @@ function makeUnit(id, team, style, setup, carried = {}) {
     homeTeleportPreviousManualTargetRow: carried.homeTeleportPreviousManualTargetRow ?? null,
     homeTeleportPreviousManualTargetCol: carried.homeTeleportPreviousManualTargetCol ?? null,
     homeTeleportPreviousManualResourceType: carried.homeTeleportPreviousManualResourceType ?? null,
+    homeTeleportPreviousManualGroundItemId: carried.homeTeleportPreviousManualGroundItemId ?? null,
     lastAttackedAt: carried.lastAttackedAt ?? null,
     ownerPlayerId: carried.ownerPlayerId ?? null,
     carryingFlagTeam: carried.carryingFlagTeam ?? null,
@@ -783,20 +1109,35 @@ function makeUnit(id, team, style, setup, carried = {}) {
 }
 
 function makeInitialGame(setup = DEFAULT_SETUP) {
+  const playerCount = clampPlayerCount(setup?.players);
+  const requestedGridSize = Number(setup.gridSize) || DEFAULT_SETUP.gridSize;
+  const safeGridSize = playerCount >= 5 ? Math.max(30, requestedGridSize) : requestedGridSize;
   const safeSetup = {
     ...DEFAULT_SETUP,
     ...setup,
-    gridSize: Number(setup.gridSize) || DEFAULT_SETUP.gridSize,
-    players: Number(setup.players) || 2,
+    gridSize: safeGridSize,
+    players: playerCount,
     startingGold: Number(setup.startingGold) || DEFAULT_SETUP.startingGold,
     maxUnits: Number(setup.maxUnits) || DEFAULT_SETUP.maxUnits,
     baseHp: Number(setup.baseHp) || DEFAULT_SETUP.baseHp,
-    baseZoneSize: Number(setup.baseZoneSize) || (Number(setup.gridSize) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE),
+    baseZoneSize: Number(setup.baseZoneSize) || (safeGridSize >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE),
     matchTimeLimit: Number(setup.matchTimeLimit) || DEFAULT_SETUP.matchTimeLimit,
     gameMode: setup.gameMode || DEFAULT_SETUP.gameMode,
     mapTemplate: setup.mapTemplate || DEFAULT_SETUP.mapTemplate,
     ctfScoreLimit: Number(setup.ctfScoreLimit) || DEFAULT_SETUP.ctfScoreLimit,
+    kothTimeLimit: Number(setup.kothTimeLimit) || DEFAULT_SETUP.kothTimeLimit,
+    restockGoldOnContinued: Boolean(setup.restockGoldOnContinued),
+    continuedRestockGold: Math.max(0, Number(setup.continuedRestockGold) || DEFAULT_SETUP.continuedRestockGold),
+    npcSpawns: Boolean(setup.npcSpawns),
+    goblinSpawnAmount: Math.max(0, Math.min(10, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount))),
+    goblinSpawnInterval: Math.max(10, Math.min(600, Number(setup.goblinSpawnInterval ?? setup.npcSpawnInterval) || DEFAULT_SETUP.goblinSpawnInterval)),
+    hillGiantSpawnAmount: Math.max(0, Math.min(5, Number(setup.hillGiantSpawnAmount) || DEFAULT_SETUP.hillGiantSpawnAmount)),
+    hillGiantSpawnInterval: Math.max(10, Math.min(600, Number(setup.hillGiantSpawnInterval) || DEFAULT_SETUP.hillGiantSpawnInterval)),
+    npcSpawnAmount: Math.max(0, Math.min(10, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount))),
+    npcSpawnInterval: Math.max(10, Math.min(600, Number(setup.goblinSpawnInterval ?? setup.npcSpawnInterval) || DEFAULT_SETUP.goblinSpawnInterval)),
+    teamMode: Boolean(setup.teamMode),
   };
+  safeSetup.alliances = normalizeTeamAlliances(safeSetup);
   return {
     setup: safeSetup,
     board: makeBoard(safeSetup),
@@ -805,14 +1146,20 @@ function makeInitialGame(setup = DEFAULT_SETUP) {
     unitArchive: {},
     splats: {},
     effects: {},
+    groundItems: {},
+    marketItems: {},
     fightTime: 0,
     bases: makeBases(safeSetup),
     ctfScores: Object.fromEntries(activeTeams(safeSetup).map((team) => [team, 0])),
+    kothScores: Object.fromEntries(activeTeams(safeSetup).map((team) => [team, 0])),
+    kothController: null,
     killFeed: [],
     gold: makeGold(safeSetup),
     loot: makeLoot(safeSetup),
     orders: defaultOrders(safeSetup),
     results: null,
+    nextNpcSpawnAt: safeSetup.goblinSpawnInterval || safeSetup.npcSpawnInterval || NPC_SPAWN_INTERVAL,
+    nextNpcSpawnAtByStyle: initialNpcSpawnSchedule(safeSetup),
     log: ["Game created. Waiting for players."],
   };
 }
@@ -873,18 +1220,79 @@ function gearBonusSummary(itemOrId) {
 
 function sellValueForItem(itemOrId) {
   const item = itemById(itemOrId);
-  return Math.max(0, Math.floor(Number(item?.cost || 0) / 2));
+  if (!item) return 0;
+  if (item.sellValue != null) return Math.max(0, Number(item.sellValue) || 0);
+  return Math.max(0, Math.floor(Number(item.cost || 0) / 2));
+}
+
+function itemQuantity(entry) {
+  return Math.max(1, Number(entry?.qty || 1));
+}
+
+function singleInventoryEntry(entry) {
+  const item = itemById(entry);
+  if (!item) return null;
+  return { instanceId: entry?.instanceId || makeRuntimeId("item"), itemId: item.id };
+}
+
+function addInventoryEntryToArray(inventory, entry) {
+  const item = itemById(entry);
+  if (!item) return false;
+  const qty = itemQuantity(entry);
+  const existingIndex = inventory.findIndex((slot) => itemById(slot)?.id === item.id);
+  if (existingIndex >= 0) {
+    inventory[existingIndex] = { ...inventory[existingIndex], itemId: item.id, qty: itemQuantity(inventory[existingIndex]) + qty };
+    return true;
+  }
+  const firstEmpty = inventory.findIndex((slot) => !slot);
+  if (firstEmpty < 0) return false;
+  inventory[firstEmpty] = { itemId: item.id, qty };
+  return true;
+}
+
+function removeOneInventoryEntry(inventory, index) {
+  const entry = inventory[index];
+  const item = itemById(entry);
+  if (!item) return null;
+  const one = singleInventoryEntry(entry);
+  const qty = itemQuantity(entry);
+  if (qty > 1) inventory[index] = { ...entry, itemId: item.id, qty: qty - 1 };
+  else inventory[index] = null;
+  return one;
 }
 
 function makeMarketItem(itemOrId, sellerTeam = null) {
   const item = itemById(itemOrId);
   if (!item) return null;
-  const source = typeof itemOrId === "object" && itemOrId ? itemOrId : makeInventoryItem(item.id);
+  const source = singleInventoryEntry(itemOrId) || makeInventoryItem(item.id);
   return { ...source, marketId: makeRuntimeId("market"), sellerTeam, listedAt: Date.now(), price: item.cost };
 }
 
 function marketItemsArray(game) {
   return Object.entries(game?.marketItems || {}).map(([key, value]) => ({ key, ...value })).filter((entry) => itemById(entry));
+}
+
+function groupedMarketItemsArray(game) {
+  const groups = new Map();
+  for (const entry of marketItemsArray(game)) {
+    const item = itemById(entry);
+    if (!item) continue;
+    const price = Number(entry.price ?? item.cost);
+    const groupKey = `${item.id}:${price}`;
+    const existing = groups.get(groupKey) || {
+      ...entry,
+      itemId: item.id,
+      price,
+      keys: [],
+      stock: 0,
+      newestListedAt: 0,
+    };
+    existing.keys.push(entry.key);
+    existing.stock += 1;
+    existing.newestListedAt = Math.max(existing.newestListedAt || 0, Number(entry.listedAt || 0));
+    groups.set(groupKey, existing);
+  }
+  return [...groups.values()].sort((a, b) => (a.price ?? 0) - (b.price ?? 0) || itemLabel(a).localeCompare(itemLabel(b)) || (b.newestListedAt ?? 0) - (a.newestListedAt ?? 0));
 }
 
 function isDefaultWeaponTwoHanded(styleId) {
@@ -920,6 +1328,167 @@ function inventoryObjectFromArray(arr) {
   const out = {};
   arr.slice(0, INVENTORY_SIZE).forEach((item, i) => { if (item) out[i] = item; });
   return out;
+}
+
+function addInventoryEntryToTeam(game, team, entry) {
+  if (!team || !game?.loot?.[team]) return false;
+  const inventory = getTeamInventory(game, team);
+  if (!addInventoryEntryToArray(inventory, typeof entry === "string" ? { itemId: entry } : entry)) return false;
+  game.loot[team].inventory = inventoryObjectFromArray(inventory);
+  return true;
+}
+
+function makeGroundItem(entry, row, col, team, fightTime = 0, droppedByUnitId = null) {
+  const item = itemById(entry);
+  if (!item) return null;
+  const id = firebaseSafeKey(makeRuntimeId("ground"));
+  return {
+    id,
+    itemId: entry?.itemId || item.id,
+    instanceId: entry?.instanceId || makeRuntimeId("item"),
+    row,
+    col,
+    team: team || null,
+    droppedByUnitId,
+    droppedAt: fightTime,
+    expiresAt: fightTime + GROUND_ITEM_TTL,
+  };
+}
+
+function groundItemsArray(gameOrItems) {
+  const raw = gameOrItems?.groundItems ?? gameOrItems ?? {};
+  return Object.entries(raw || {})
+    .map(([key, value]) => ({ id: value?.id || key, ...value }))
+    .filter((entry) => itemById(entry));
+}
+
+function groundItemRemainingSeconds(item, fightTime = 0) {
+  return Math.max(0, Math.ceil(Number(item?.expiresAt ?? 0) - Number(fightTime || 0)));
+}
+
+function objectFromGroundItems(items) {
+  const out = {};
+  for (const item of items) {
+    if (!itemById(item)) continue;
+    const id = firebaseSafeKey(item.id || makeRuntimeId("ground"));
+    out[id] = { ...item, id };
+  }
+  return out;
+}
+
+function randomAmount(min = 1, max = 1) {
+  const lo = Math.max(0, Math.floor(Number(min) || 0));
+  const hi = Math.max(lo, Math.floor(Number(max) || lo));
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+
+function rollGoblinLoot() {
+  const total = GOBLIN_LOOT_TABLE.reduce((s, r) => s + r.weight, 0);
+  let roll = Math.random() * total;
+  for (const row of GOBLIN_LOOT_TABLE) {
+    roll -= row.weight;
+    if (roll <= 0) {
+      if (row.type === "gold") return { type: "gold", amount: randomAmount(row.min, row.max) };
+      return { type: "item", itemId: row.itemId, qty: 1 };
+    }
+  }
+  return { type: "gold", amount: 1 };
+}
+
+function rollNpcDrops(styleId) {
+  if (styleId === "hill_giant") {
+    const drops = [...HILL_GIANT_ALWAYS_DROP_ITEMS.map((drop) => ({ type: "item", itemId: drop.itemId, qty: drop.qty || 1 }))];
+    for (const row of HILL_GIANT_DROP_TABLE) {
+      if (Math.random() > Number(row.chance || 0)) continue;
+      if (row.type === "gold") drops.push({ type: "gold", amount: randomAmount(row.min, row.max) });
+      else drops.push({ type: "item", itemId: row.itemId, qty: randomAmount(row.min || 1, row.max || row.min || 1) });
+    }
+    return drops;
+  }
+  const drops = GOBLIN_ALWAYS_DROP_ITEMS.map((itemId) => ({ type: "item", itemId, qty: 1 }));
+  drops.unshift(rollGoblinLoot());
+  return drops;
+}
+
+function makeNpcUnit(id, style, setup) {
+  const mid = midOf(sizeOf(setup));
+  const unit = makeUnit(id, "npc", style, setup, { name: STYLE[style]?.name || "NPC" });
+  unit.row = mid;
+  unit.col = mid;
+  unit.ownerPlayerId = null;
+  unit.targetOverride = "blank";
+  unit.priority = "closest";
+  unit.hp = STYLE[style]?.baseStats?.hitpoints || 30;
+  return unit;
+}
+
+function npcSpawnCells(setup, units, styleId = "goblin", board = null) {
+  const size = sizeOf(setup);
+  const mid = midOf(size);
+  const candidates = [];
+  const spawnBoard = board || makeBoard(setup);
+  const probe = { team: "npc", style: styleId, row: mid, col: mid, hp: STYLE[styleId]?.baseStats?.hitpoints || 1 };
+  for (let radius = 0; radius <= 4; radius++) {
+    for (let row = mid - radius; row <= mid + radius; row++) {
+      for (let col = mid - radius; col <= mid + radius; col++) {
+        if (!inBounds(row, col, size)) continue;
+        if (Math.max(Math.abs(row - mid), Math.abs(col - mid)) !== radius) continue;
+        if (canUnitStandAt(spawnBoard, units, probe, row, col, setup)) candidates.push({ row, col });
+      }
+    }
+    if (candidates.length) return candidates;
+  }
+  return [];
+}
+
+function plannedNpcSpawnCells(setup, units, styleId, count, board = null) {
+  const planned = [];
+  const reserved = units.map((u) => ({ ...u }));
+  for (let i = 0; i < count; i++) {
+    const cell = npcSpawnCells(setup, reserved, styleId, board)[0];
+    if (!cell) break;
+    planned.push(cell);
+    reserved.push({ id: `planned_${styleId}_${i}`, team: "npc", style: styleId, row: cell.row, col: cell.col, hp: 1 });
+  }
+  return planned;
+}
+
+function spawnNpcIfNeeded(game, units, setup, fightTime, killFeed, logEntries, effects = []) {
+  if (!setup.npcSpawns) return { units, killFeed, logEntries, effects };
+  const nextByStyle = { ...(game.nextNpcSpawnAtByStyle || {}) };
+  const spawnedByStyle = {};
+  let anyDue = false;
+  for (const cfg of npcSpawnConfigs(setup)) {
+    const spawnInterval = Math.max(10, Number(cfg.interval) || NPC_SPAWN_INTERVAL);
+    let nextAt = Number(nextByStyle[cfg.style] ?? (cfg.style === "goblin" ? game.nextNpcSpawnAt : undefined) ?? spawnInterval);
+    if (fightTime + 0.0001 < nextAt) continue;
+    anyDue = true;
+    const alive = units.filter((u) => u.team === "npc" && u.style === cfg.style && u.hp > 0).length;
+    const toSpawn = Math.max(0, cfg.amount - alive);
+    for (let i = 0; i < toSpawn; i++) {
+      const cell = npcSpawnCells(setup, units, cfg.style, game.board)[0];
+      if (!cell) break;
+      const npc = makeNpcUnit(makeRuntimeId("npc"), cfg.style, setup);
+      npc.row = cell.row;
+      npc.col = cell.col;
+      units.push(npc);
+      effects.push({ id: makeRuntimeId("spawn"), type: "spawn", row: npc.row, col: npc.col, team: "npc", style: cfg.style, ttl: SPAWN_EFFECT_TTL });
+      spawnedByStyle[cfg.style] = (spawnedByStyle[cfg.style] || 0) + 1;
+    }
+    nextAt += spawnInterval;
+    while (nextAt <= fightTime + 0.0001) nextAt += spawnInterval;
+    nextByStyle[cfg.style] = nextAt;
+  }
+  if (!anyDue) return { units, killFeed, logEntries, effects };
+  game.nextNpcSpawnAtByStyle = nextByStyle;
+  game.nextNpcSpawnAt = nextByStyle.goblin ?? game.nextNpcSpawnAt ?? NPC_SPAWN_INTERVAL;
+  const totalSpawned = Object.values(spawnedByStyle).reduce((sum, count) => sum + count, 0);
+  if (totalSpawned <= 0) return { units, killFeed, logEntries, effects };
+  const labels = Object.entries(spawnedByStyle).map(([style, count]) => `${count} ${STYLE[style]?.name || style}${count === 1 ? "" : "s"}`);
+  const spawnText = `${labels.join(" and ")} spawned near the center.`;
+  killFeed = [{ id: makeRuntimeId("feed"), text: spawnText, team: "npc", style: Object.keys(spawnedByStyle)[0] || "goblin", time: fightTime }, ...killFeed].slice(0, 30);
+  logEntries = [spawnText, ...logEntries].slice(0, 8);
+  return { units, killFeed, logEntries, effects };
 }
 
 function firstOpenInventorySlot(arr) {
@@ -1076,7 +1645,8 @@ function lineClear(board, from, to, setup) {
 }
 
 function canAttack(board, attacker, target, range, setup) {
-  return manhattan(attacker, target) <= range && lineClear(board, attacker, target, setup);
+  const targetCell = nearestTargetCell(attacker, target);
+  return unitDistance(attacker, target) <= range && lineClear(board, attacker, targetCell, setup);
 }
 
 function advantage(attackerStyle, defenderStyle) {
@@ -1167,10 +1737,21 @@ function resolveGuaranteedUnitHit(attacker, target, minPct = 0.4, maxPct = 0.95)
 function unitOccupies(units, row, col, setup, movingUnit = null) {
   if (isBaseCell(row, col, setup)) return false;
   return units.some((u) => {
-    if (u.hp <= 0 || u.row !== row || u.col !== col || u.id === movingUnit?.id) return false;
+    if (u.hp <= 0 || u.id === movingUnit?.id) return false;
     if (movingUnit?.carryingFlagTeam && u.team === movingUnit.team) return false;
-    return true;
+    return unitFootprint(u).some((cell) => cell.row === row && cell.col === col);
   });
+}
+
+function canUnitStandAt(board, units, unit, row, col, setup, options = {}) {
+  const ignoreOccupied = Boolean(options.ignoreOccupied);
+  const size = sizeOf(setup);
+  for (const cell of unitFootprintAt(unit, row, col)) {
+    if (!inBounds(cell.row, cell.col, size)) return false;
+    if (!walkable(board[cell.row]?.[cell.col], setup)) return false;
+    if (!ignoreOccupied && unitOccupies(units, cell.row, cell.col, setup, unit)) return false;
+  }
+  return true;
 }
 
 function findPath(board, units, unit, target, setup, options = {}) {
@@ -1186,16 +1767,18 @@ function findPath(board, units, unit, target, setup, options = {}) {
   let best = null;
   while (queue.length) {
     const cur = queue.shift();
-    const dist = manhattan(cur, target);
-    if (dist <= range && (range > 1 ? lineClear(board, cur, target, setup) : true)) return cur.path;
+    const probe = { ...unit, row: cur.row, col: cur.col };
+    const dist = unitDistance(probe, target);
+    const clearTarget = nearestTargetCell(cur, target);
+    if (dist <= range && (range > 1 ? lineClear(board, cur, clearTarget, setup) : true)) return cur.path;
     if (!best || dist < best.distance) best = { ...cur, distance: dist };
     for (const [dr, dc] of dirs) {
       const nr = cur.row + dr;
       const nc = cur.col + dc;
       const isTargetCell = nr === target.row && nc === target.col;
       if (!inBounds(nr, nc, size) || seen.has(key(nr, nc)) || (!allowTargetCell && isTargetCell)) continue;
-      if (!walkable(board[nr][nc], setup)) continue;
-      if (!isTargetCell && avoidOccupied && unitOccupies(units, nr, nc, setup, unit)) continue;
+      const canStand = canUnitStandAt(board, units, unit, nr, nc, setup, { ignoreOccupied: !avoidOccupied || (isTargetCell && allowTargetCell) });
+      if (!canStand) continue;
       seen.add(key(nr, nc));
       queue.push({ row: nr, col: nc, path: [...cur.path, { row: nr, col: nc }] });
     }
@@ -1207,15 +1790,15 @@ function findPath(board, units, unit, target, setup, options = {}) {
 function bestOpenForwardStep(board, units, unit, target, setup) {
   const size = sizeOf(setup);
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  const currentDistance = manhattan(unit, target);
+  const currentDistance = unitDistance(unit, target);
   let best = null;
   let sideStep = null;
   for (const [dr, dc] of dirs) {
     const nr = unit.row + dr;
     const nc = unit.col + dc;
     if (!inBounds(nr, nc, size) || (nr === target.row && nc === target.col)) continue;
-    if (!walkable(board[nr][nc], setup) || unitOccupies(units, nr, nc, setup, unit)) continue;
-    const distance = manhattan({ row: nr, col: nc }, target);
+    if (!canUnitStandAt(board, units, unit, nr, nc, setup)) continue;
+    const distance = unitDistance({ ...unit, row: nr, col: nc }, target);
     if (distance < currentDistance && (!best || distance < best.distance)) best = { row: nr, col: nc, distance };
     if (distance === currentDistance && !sideStep) sideStep = { row: nr, col: nc, distance };
   }
@@ -1226,9 +1809,11 @@ function closestEnemyUnitInRange(board, units, unit, setup, combatTeams) {
   const range = unitAttackRange(unit);
   const candidates = [];
   for (const target of units) {
-    if (target.team === unit.team || target.hp <= 0 || !combatTeams.includes(target.team)) continue;
+    if (!areHostileTeams(unit.team, target.team, setup) || target.hp <= 0) continue;
+    const npcCombat = unit.team === "npc" ? activeTeams(setup).includes(target.team) : target.team === "npc" || combatTeams.includes(target.team);
+    if (!npcCombat) continue;
     if (!canAttack(board, unit, target, range, setup)) continue;
-    candidates.push({ target, dist: manhattan(unit, target), hp: target.hp });
+    candidates.push({ target, dist: unitDistance(unit, target), hp: target.hp });
   }
   if (!candidates.length) return null;
   const flagCarrier = candidates.find((entry) => entry.target.carryingFlagTeam === unit.team);
@@ -1241,23 +1826,23 @@ function closestEnemyUnitInRange(board, units, unit, setup, combatTeams) {
   return candidates[0].target;
 }
 
-function enemyFlagCarrierForTeam(units, team, combatTeams) {
-  return units.find((target) => target.team !== team && target.hp > 0 && target.carryingFlagTeam === team && combatTeams.includes(target.team)) ?? null;
+function enemyFlagCarrierForTeam(units, team, combatTeams, setup = DEFAULT_SETUP) {
+  return units.find((target) => areHostileTeams(team, target.team, setup) && target.hp > 0 && target.carryingFlagTeam && areAlliedTeams(team, target.carryingFlagTeam, setup) && combatTeams.includes(target.team)) ?? null;
 }
 
-function alliedFlagCarrierForTeam(units, team, ownUnitId = null) {
-  return units.find((ally) => ally.team === team && ally.hp > 0 && ally.id !== ownUnitId && ally.carryingFlagTeam && ally.carryingFlagTeam !== team) ?? null;
+function alliedFlagCarrierForTeam(units, team, ownUnitId = null, setup = DEFAULT_SETUP) {
+  return units.find((ally) => areAlliedTeams(team, ally.team, setup) && ally.hp > 0 && ally.id !== ownUnitId && ally.carryingFlagTeam && areHostileTeams(team, ally.carryingFlagTeam, setup)) ?? null;
 }
 
 function enemyThreatNearUnit(board, units, protectedUnit, escortUnit, combatTeams, setup) {
   if (!protectedUnit) return null;
   const candidates = units
-    .filter((target) => target.team !== protectedUnit.team && target.hp > 0 && combatTeams.includes(target.team))
+    .filter((target) => areHostileTeams(protectedUnit.team, target.team, setup) && target.hp > 0 && combatTeams.includes(target.team))
     .map((target) => {
       const targetRange = STYLE[target.style]?.range ?? 1;
       const canHitCarrier = canAttack(board, target, protectedUnit, targetRange, setup);
-      const carrierDist = manhattan(target, protectedUnit);
-      const escortDist = escortUnit ? manhattan(target, escortUnit) : carrierDist;
+      const carrierDist = unitDistance(target, protectedUnit);
+      const escortDist = escortUnit ? unitDistance(target, escortUnit) : carrierDist;
       return { target, canHitCarrier, carrierDist, escortDist, hp: target.hp };
     })
     .filter((entry) => entry.canHitCarrier || entry.carrierDist <= DEFEND_RADIUS);
@@ -1270,10 +1855,10 @@ function isFlagAtHome(units, flagTeam) {
   return !units.some((unit) => unit.hp > 0 && unit.carryingFlagTeam === flagTeam);
 }
 
-function nearestEnemyUnit(units, unit, combatTeams) {
+function nearestEnemyUnit(units, unit, combatTeams, setup = DEFAULT_SETUP) {
   const candidates = units
-    .filter((target) => target.team !== unit.team && target.hp > 0 && combatTeams.includes(target.team))
-    .map((target) => ({ target, dist: manhattan(unit, target), hp: target.hp }));
+    .filter((target) => areHostileTeams(unit.team, target.team, setup) && target.hp > 0 && combatTeams.includes(target.team))
+    .map((target) => ({ target, dist: unitDistance(unit, target), hp: target.hp }));
   if (!candidates.length) return null;
   candidates.sort((a, b) => a.dist - b.dist || a.hp - b.hp);
   return candidates[0].target;
@@ -1286,7 +1871,7 @@ function cleanupDead(units, respawnQueue, bases) {
     if (unit.hp > 0) survivors.push(unit);
     else {
       const deathCount = (unit.deathCount ?? 0) + 1;
-      if ((bases[unit.team]?.hp ?? 0) > 0) {
+      if (unit.team !== "npc" && (bases[unit.team]?.hp ?? 0) > 0) {
         const respawnTime = RESPAWN_BASE_TIME + deathCount * 3 + deathCount * deathCount;
         respawnQueue.push({ ...unit, hp: maxHp(unit), deathCount, timer: respawnTime, carryingFlagTeam: null });
         minionsDied.push({ ...unit, carryingFlagTeam: null, deathCount, respawnTime });
@@ -1379,11 +1964,11 @@ function defendTargetForUnit(board, units, unit, setup, combatTeams, bases) {
   if ((bases?.[unit.team]?.hp ?? 0) <= 0) return null;
   const ownBase = baseOf(unit.team, setup);
   const candidates = units
-    .filter((target) => target.team !== unit.team && target.hp > 0 && combatTeams.includes(target.team))
+    .filter((target) => areHostileTeams(unit.team, target.team, setup) && target.hp > 0 && combatTeams.includes(target.team))
     .map((target) => {
       const targetRange = STYLE[target.style]?.range ?? 1;
       const attackingBase = canAttack(board, target, ownBase, targetRange, setup);
-      const baseDistance = manhattan(target, ownBase);
+      const baseDistance = unitDistance(target, ownBase);
       return { target, attackingBase, baseDistance, hp: target.hp };
     })
     .filter((entry) => entry.attackingBase || entry.baseDistance <= DEFEND_RADIUS);
@@ -1403,8 +1988,9 @@ function effectiveTargetOrder(unit, game) {
 function unitTargetOptions(game, unit) {
   const resourceType = resourceTargetType(unit);
   const resourceOptions = resourceType ? [`resource_${resourceType}`] : [];
-  if (!game || !unit) return ["inherit", "blank", ...resourceOptions, "defend", "protectCarrier", "homeTeleport", "manual"];
-  return ["inherit", "blank", ...resourceOptions, "defend", "protectCarrier", "homeTeleport", "manual", ...targetableBaseTeams(game.bases || {}, game.setup, unit.team)];
+  const hillOptions = game?.setup?.gameMode === "king_hill" ? ["hill"] : [];
+  if (!game || !unit) return ["inherit", "blank", ...hillOptions, "closestNpc", ...resourceOptions, "defend", "protectCarrier", "homeTeleport", "manual"];
+  return ["inherit", "blank", ...hillOptions, "closestNpc", ...resourceOptions, "defend", "protectCarrier", "homeTeleport", "manual", ...targetableBaseTeams(game.bases || {}, game.setup, unit.team)];
 }
 
 function clearManualTarget(unit, nextTarget = "inherit") {
@@ -1414,6 +2000,7 @@ function clearManualTarget(unit, nextTarget = "inherit") {
   delete unit.manualTargetRow;
   delete unit.manualTargetCol;
   delete unit.manualResourceType;
+  delete unit.manualGroundItemId;
   delete unit.manualTargetStartedAt;
   delete unit.manualTargetBlockedSince;
 }
@@ -1426,6 +2013,7 @@ function finishHomeTeleport(unit) {
   unit.manualTargetRow = unit.homeTeleportPreviousManualTargetRow ?? null;
   unit.manualTargetCol = unit.homeTeleportPreviousManualTargetCol ?? null;
   unit.manualResourceType = unit.homeTeleportPreviousManualResourceType ?? null;
+  unit.manualGroundItemId = unit.homeTeleportPreviousManualGroundItemId ?? null;
   delete unit.homeTeleportStartedAt;
   delete unit.homeTeleportHpAtStart;
   delete unit.homeTeleportLastAttackedAtStart;
@@ -1435,6 +2023,7 @@ function finishHomeTeleport(unit) {
   delete unit.homeTeleportPreviousManualTargetRow;
   delete unit.homeTeleportPreviousManualTargetCol;
   delete unit.homeTeleportPreviousManualResourceType;
+  delete unit.homeTeleportPreviousManualGroundItemId;
 }
 
 function cancelHomeTeleport(unit, nextTarget = null) {
@@ -1442,17 +2031,22 @@ function cancelHomeTeleport(unit, nextTarget = null) {
   else finishHomeTeleport(unit);
 }
 
-function manualTargetForUnit(unit, board, units, setup) {
+function manualTargetForUnit(unit, board, units, setup, groundItems = {}) {
   if (unit.targetOverride !== "manual") return { kind: null };
   if (unit.manualTargetType === "unit") {
-    const target = units.find((u) => u.id === unit.manualTargetUnitId && u.hp > 0 && u.team !== unit.team);
+    const target = units.find((u) => u.id === unit.manualTargetUnitId && u.hp > 0 && areHostileTeams(unit.team, u.team, setup));
     if (!target) return { kind: "expired", reason: "target gone" };
     return { kind: "unit", target };
+  }
+  if (unit.manualTargetType === "follow") {
+    const target = units.find((u) => u.id === unit.manualTargetUnitId && u.hp > 0 && u.id !== unit.id && !areHostileTeams(unit.team, u.team, setup));
+    if (!target) return { kind: "expired", reason: "follow target gone" };
+    return { kind: "follow", target };
   }
   if (unit.manualTargetType === "tile") {
     const row = Number(unit.manualTargetRow);
     const col = Number(unit.manualTargetCol);
-    if (!Number.isFinite(row) || !Number.isFinite(col) || !inBounds(row, col, sizeOf(setup)) || !walkable(board[row][col], setup)) {
+    if (!Number.isFinite(row) || !Number.isFinite(col) || !inBounds(row, col, sizeOf(setup)) || !canUnitStandAt(board, units, unit, row, col, setup, { ignoreOccupied: unit.row === row && unit.col === col })) {
       return { kind: "expired", reason: "tile blocked" };
     }
     return { kind: "tile", target: { row, col } };
@@ -1469,6 +2063,11 @@ function manualTargetForUnit(unit, board, units, setup) {
       return { kind: "expired", reason: "resource target gone" };
     }
     return { kind: "resource", resourceType, target: { row, col } };
+  }
+  if (unit.manualTargetType === "groundItem") {
+    const item = groundItemsArray(groundItems).find((entry) => entry.id === unit.manualGroundItemId);
+    if (!item) return { kind: "expired", reason: "ground item gone" };
+    return { kind: "groundItem", item, target: { row: Number(item.row), col: Number(item.col) } };
   }
   return { kind: "pending" };
 }
@@ -1554,7 +2153,10 @@ function damageResourceTile(board, target, resourceType, damage, fightTime) {
 }
 
 function processResourceRegrowth(board, units, setup, fightTime) {
-  const occupied = new Set(units.filter((u) => u.hp > 0).map((u) => key(u.row, u.col)));
+  const occupied = new Set();
+  for (const unit of units.filter((u) => u.hp > 0)) {
+    for (const cell of unitFootprint(unit)) occupied.add(key(cell.row, cell.col));
+  }
   const size = sizeOf(setup);
   for (let row = 0; row < size; row++) {
     for (let col = 0; col < size; col++) {
@@ -1575,9 +2177,9 @@ function processResourceRegrowth(board, units, setup, fightTime) {
 
 function targetForUnit(unit, game, bases, units, respawnQueue) {
   const baseTargets = targetableBaseTeams(bases, game.setup, unit.team);
-  const combatTargets = teamsWithCombatPresence(bases, units, respawnQueue, game.setup).filter((t) => t !== unit.team);
+  const combatTargets = teamsWithCombatPresence(bases, units, respawnQueue, game.setup).filter((t) => areHostileTeams(unit.team, t, game.setup));
   const ordered = effectiveTargetOrder(unit, game);
-  if (ordered === "homeTeleport") return null;
+  if (ordered === "homeTeleport" || ordered === "hill") return null;
   if (ordered === "blank" || ordered === "defend" || ordered === "protectCarrier" || ordered === "resource_tree" || ordered === "resource_rock") return pickRandomTarget(unit, baseTargets.length ? baseTargets : combatTargets);
   if (ordered && baseTargets.includes(ordered)) return ordered;
   return baseTargets[0] ?? combatTargets[0] ?? null;
@@ -1605,6 +2207,8 @@ function summarizeResults(game, reason) {
       flagGrabs: teamUnits.reduce((s, u) => s + (u.flagGrabs ?? 0), 0),
       flagCaptures: teamUnits.reduce((s, u) => s + (u.flagCaptures ?? 0), 0),
       lootGold: teamUnits.reduce((s, u) => s + (u.lootGold ?? 0), 0),
+      hillUncontestedTime: teamUnits.reduce((s, u) => s + (u.hillUncontestedTime ?? 0), 0),
+      hillContestedTime: teamUnits.reduce((s, u) => s + (u.hillContestedTime ?? 0), 0),
       accuracy: Math.round(100 * teamUnits.reduce((s, u) => s + (u.hitsLanded ?? 0), 0) / Math.max(1, teamUnits.reduce((s, u) => s + (u.attacksAttempted ?? 0), 0))),
       units: teamUnits.sort((a, b) => (b.totalDamage ?? 0) - (a.totalDamage ?? 0) || (b.kills ?? 0) - (a.kills ?? 0)),
     };
@@ -1612,26 +2216,29 @@ function summarizeResults(game, reason) {
   const topDamage = [...tracked].sort((a, b) => (b.totalDamage ?? 0) - (a.totalDamage ?? 0)).slice(0, 5);
   const topKills = [...tracked].sort((a, b) => (b.kills ?? 0) - (a.kills ?? 0) || (b.totalDamage ?? 0) - (a.totalDamage ?? 0)).slice(0, 5);
   const topLevels = [...tracked].sort((a, b) => (b.levelsGained ?? 0) - (a.levelsGained ?? 0)).slice(0, 5);
+  const topHill = [...tracked].sort((a, b) => ((b.hillUncontestedTime ?? 0) + (b.hillContestedTime ?? 0)) - ((a.hillUncontestedTime ?? 0) + (a.hillContestedTime ?? 0))).slice(0, 5);
   const allUnits = [...tracked].sort((a, b) => (b.totalDamage ?? 0) - (a.totalDamage ?? 0) || (b.kills ?? 0) - (a.kills ?? 0) || (b.levelsGained ?? 0) - (a.levelsGained ?? 0));
   const ctfWinner = setup.gameMode === "capture_flag" ? teams.find((team) => (game.ctfScores?.[team] ?? 0) >= (setup.ctfScoreLimit ?? 3)) : null;
+  const kothWinner = setup.gameMode === "king_hill" ? teams.find((team) => (game.kothScores?.[team] ?? 0) >= (setup.kothTimeLimit ?? 60)) : null;
   let timeLimitWinner = null;
   if (reason === "time limit" || reason === "vote to end") {
     const ranked = teams.map((team) => ({
       team,
-      score: game.ctfScores?.[team] ?? 0,
+      score: setup.gameMode === "king_hill" ? (game.kothScores?.[team] ?? 0) : (game.ctfScores?.[team] ?? 0),
       baseHp: game.bases?.[team]?.hp ?? 0,
       damage: teamStats[team]?.damage ?? 0,
       kills: teamStats[team]?.kills ?? 0,
     })).sort((a, b) => b.score - a.score || b.baseHp - a.baseHp || b.damage - a.damage || b.kills - a.kills);
     if (ranked.length && (ranked.length === 1 || ranked[0].score !== ranked[1].score || ranked[0].baseHp !== ranked[1].baseHp || ranked[0].damage !== ranked[1].damage || ranked[0].kills !== ranked[1].kills)) timeLimitWinner = ranked[0].team;
   }
-  const winnerTeam = ctfWinner ?? timeLimitWinner ?? (alive.length === 1 ? alive[0] : alive.length === 0 && presence.length === 1 ? presence[0] : null);
+  const winnerTeam = ctfWinner ?? kothWinner ?? timeLimitWinner ?? (alive.length === 1 ? alive[0] : alive.length === 0 && presence.length === 1 ? presence[0] : null);
   return {
     reason,
     winnerTeam,
     winner: winnerTeam ? TEAM_META[winnerTeam].name : alive.length === 0 && presence.length === 0 ? "Draw" : null,
     bases: Object.fromEntries(teams.map((team) => [team, Math.max(0, Math.round(game.bases?.[team]?.hp ?? 0))])),
     ctfScores: game.ctfScores || {},
+    kothScores: game.kothScores || {},
     gold: game.gold || {},
     gameMode: setup.gameMode || "classic",
     fightTime: Math.round(game.fightTime ?? 0),
@@ -1639,6 +2246,7 @@ function summarizeResults(game, reason) {
     topDamage,
     topKills,
     topLevels,
+    topHill,
     allUnits,
   };
 }
@@ -1665,13 +2273,22 @@ function stepGame(game, dt) {
   let unitArchive = { ...(game.unitArchive || {}) };
   let splats = arrayFromObject(game.splats).map((s) => ({ ...s, ttl: s.ttl - dt })).filter((s) => s.ttl > 0);
   let effects = arrayFromObject(game.effects).map((e) => ({ ...e, ttl: e.ttl - dt })).filter((e) => e.ttl > 0);
+  let groundItems = groundItemsArray(game);
   let logEntries = [...(game.log || [])];
   let killFeed = [...(game.killFeed || [])].slice(0, 30);
   const ctfScores = { ...(game.ctfScores || Object.fromEntries(activeTeams(setup).map((team) => [team, 0]))) };
+  const kothScores = { ...(game.kothScores || Object.fromEntries(activeTeams(setup).map((team) => [team, 0]))) };
   const gold = { ...(game.gold || makeGold(setup)) };
   const isCaptureFlag = setup.gameMode === "capture_flag";
+  const isKingHill = setup.gameMode === "king_hill";
 
   const fightTime = (game.fightTime || 0) + dt;
+  groundItems = groundItems.filter((item) => Number(item.expiresAt ?? 0) > fightTime);
+  const spawnedNpcState = spawnNpcIfNeeded(game, units, setup, fightTime, killFeed, logEntries, effects);
+  units = spawnedNpcState.units;
+  killFeed = spawnedNpcState.killFeed;
+  logEntries = spawnedNpcState.logEntries;
+  effects = spawnedNpcState.effects;
   processResourceRegrowth(board, units, setup, fightTime);
   const strandedRespawns = respawnQueue.filter((r) => (bases[r.team]?.hp ?? 0) <= 0);
   if (strandedRespawns.length) {
@@ -1680,7 +2297,7 @@ function stepGame(game, dt) {
   const readyRespawns = respawnQueue.filter((r) => (r.timer ?? 0) <= 0 && (bases[r.team]?.hp ?? 0) > 0);
   respawnQueue = respawnQueue.filter((r) => (r.timer ?? 0) > 0 && (bases[r.team]?.hp ?? 0) > 0);
   for (const respawn of readyRespawns) {
-    units.push(makeUnit(respawn.id, respawn.team, respawn.style, setup, {
+    const spawnedUnit = makeUnit(respawn.id, respawn.team, respawn.style, setup, {
       ...respawn,
       hp: undefined,
       row: undefined,
@@ -1689,7 +2306,8 @@ function stepGame(game, dt) {
       moveTimer: 0,
       voidwakerGuaranteesLeft: STYLE[respawn.style]?.guaranteedAttacks ?? respawn.voidwakerGuaranteesLeft,
       carryingFlagTeam: null,
-    }));
+    });
+    units.push(spawnedUnit);
   }
 
   const addSplat = (target, dmg, team, style, label = null) => splats.push({ id: makeRuntimeId("s"), row: target.row, col: target.col, text: label ?? (dmg > 0 ? `-${dmg}` : "miss"), team, damageType: damageTypeClass(style), ttl: SPLAT_TTL });
@@ -1702,8 +2320,31 @@ function stepGame(game, dt) {
     const noRespawnUnits = cleanup.minionsDied.filter((unit) => unit.respawnTime === 0 || (bases[unit.team]?.hp ?? 0) <= 0);
     if (noRespawnUnits.length) unitArchive = mergeUnitArchive(unitArchive, noRespawnUnits);
     for (const unit of cleanup.minionsDied) {
+      if (unit.team === "npc") {
+        const killer = units.find((u) => u.id === unit.lastAttackerId) || arrayFromObject(game.units).find((u) => u.id === unit.lastAttackerId);
+        const npcName = STYLE[unit.style]?.name || unit.name || "NPC";
+        if (killer && activeTeams(setup).includes(killer.team)) {
+          for (const loot of rollNpcDrops(unit.style)) {
+            if (loot.type === "gold") {
+              gold[killer.team] = (gold[killer.team] ?? 0) + loot.amount;
+              killer.lootGold = (killer.lootGold ?? 0) + loot.amount;
+              killFeed = [{ id: makeRuntimeId("feed"), text: `${killer.name} looted ${loot.amount}g from a ${npcName}.`, team: killer.team, style: killer.style, time: fightTime }, ...killFeed].slice(0, 30);
+            } else {
+              const item = itemById(loot.itemId);
+              const qty = Math.max(1, Number(loot.qty || 1));
+              if (addInventoryEntryToTeam(game, killer.team, { itemId: loot.itemId, qty })) {
+                killFeed = [{ id: makeRuntimeId("feed"), text: `${killer.name} looted ${item?.name || loot.itemId}${qty > 1 ? ` x${qty}` : ""} from a ${npcName}.`, team: killer.team, style: killer.style, time: fightTime }, ...killFeed].slice(0, 30);
+              } else {
+                killFeed = [{ id: makeRuntimeId("feed"), text: `${killer.name}'s inventory was full; ${item?.name || loot.itemId}${qty > 1 ? ` x${qty}` : ""} was lost.`, team: killer.team, style: killer.style, time: fightTime }, ...killFeed].slice(0, 30);
+              }
+            }
+          }
+        }
+        logEntries = [`${unit.name} was defeated.`, ...logEntries].slice(0, 8);
+        continue;
+      }
       const respawnText = unit.respawnTime > 0 ? ` Respawn in ${unit.respawnTime}s.` : " Base dead: no respawn.";
-      logEntries = [`${TEAM_META[unit.team].name} ${unit.name} died.${respawnText}`, ...logEntries].slice(0, 8);
+      logEntries = [`${TEAM_META[unit.team]?.name || "NPC"} ${unit.name} died.${respawnText}`, ...logEntries].slice(0, 8);
     }
   };
 
@@ -1716,28 +2357,33 @@ function stepGame(game, dt) {
     if (unit.hp <= 0) continue;
     const combatTeams = teamsWithCombatPresence(bases, units, respawnQueue, setup);
     unit.maxHpSeen = Math.max(unit.maxHpSeen ?? 0, maxHp(unit));
-    const flagCarrierTarget = isCaptureFlag ? enemyFlagCarrierForTeam(units, unit.team, combatTeams) : null;
-    const manual = manualTargetForUnit(unit, board, units, setup);
+    const flagCarrierTarget = unit.team === "npc" ? null : (isCaptureFlag ? enemyFlagCarrierForTeam(units, unit.team, combatTeams, setup) : null);
+    const manual = manualTargetForUnit(unit, board, units, setup, groundItems);
     if (manual.kind === "expired") clearManualTarget(unit);
     let manualUnitTarget = !flagCarrierTarget && manual.kind === "unit" ? manual.target : null;
     let manualTileTarget = !flagCarrierTarget && manual.kind === "tile" ? manual.target : null;
     let manualResourceType = !flagCarrierTarget && manual.kind === "resource" ? manual.resourceType : null;
     let manualResourceTarget = !flagCarrierTarget && manual.kind === "resource" ? manual.target : null;
+    let manualFollowTarget = !flagCarrierTarget && manual.kind === "follow" ? manual.target : null;
+    let manualGroundItem = !flagCarrierTarget && manual.kind === "groundItem" ? manual.item : null;
+    let manualGroundItemTarget = manualGroundItem ? manual.target : null;
     if (manualTileTarget && unit.row === manualTileTarget.row && unit.col === manualTileTarget.col) {
       clearManualTarget(unit);
       manualTileTarget = null;
     }
-    const manualActive = Boolean(manualUnitTarget || manualTileTarget || manualResourceTarget);
-    const orderedTarget = effectiveTargetOrder(unit, game);
+    const manualActive = Boolean(manualUnitTarget || manualTileTarget || manualResourceTarget || manualFollowTarget || manualGroundItemTarget);
+    const orderedTarget = unit.team === "npc" ? "blank" : effectiveTargetOrder(unit, game);
+    const closestNpcTarget = !flagCarrierTarget && !manualActive && orderedTarget === "closestNpc" ? nearestEnemyUnit(units, unit, ["npc"], setup) : null;
     const defendTarget = !flagCarrierTarget && !manualActive && orderedTarget === "defend" ? defendTargetForUnit(board, units, unit, setup, combatTeams, bases) : null;
-    const supportFlagCarrier = isCaptureFlag && !unit.carryingFlagTeam && !flagCarrierTarget && !manualActive ? alliedFlagCarrierForTeam(units, unit.team, unit.id) : null;
+    const supportFlagCarrier = isCaptureFlag && !unit.carryingFlagTeam && !flagCarrierTarget && !manualActive ? alliedFlagCarrierForTeam(units, unit.team, unit.id, setup) : null;
     const protectTarget = supportFlagCarrier ? enemyThreatNearUnit(board, units, supportFlagCarrier, unit, combatTeams, setup) : null;
     const autoResourceType = !flagCarrierTarget && !manualActive && !defendTarget && !protectTarget && !supportFlagCarrier ? resourceOrderType(unit, orderedTarget) : null;
     const resourceType = manualResourceType ?? autoResourceType;
     const resourceTarget = manualResourceTarget ?? (resourceType ? nearestResourceTile(board, units, unit, setup, resourceType) : null);
-    let targetTeam = flagCarrierTarget || manualActive || defendTarget || protectTarget || supportFlagCarrier || resourceTarget ? null : targetForUnit(unit, game, bases, units, respawnQueue);
+    const hillTarget = isKingHill && !flagCarrierTarget && !manualActive && !closestNpcTarget && !defendTarget && !protectTarget && !supportFlagCarrier && !resourceTarget && orderedTarget === "hill" ? hillCenter(setup) : null;
+    let targetTeam = unit.team === "npc" ? null : (flagCarrierTarget || manualActive || closestNpcTarget || defendTarget || protectTarget || supportFlagCarrier || resourceTarget || hillTarget ? null : targetForUnit(unit, game, bases, units, respawnQueue));
     const noLivingEnemyBases = targetableBaseTeams(bases, setup, unit.team).length === 0;
-    const cleanupTarget = !flagCarrierTarget && !manualActive && !defendTarget && !protectTarget && !supportFlagCarrier && !resourceTarget && noLivingEnemyBases ? nearestEnemyUnit(units, unit, combatTeams) : null;
+    const cleanupTarget = unit.team === "npc" ? nearestEnemyUnit(units, unit, activeTeams(setup), setup) : (!flagCarrierTarget && !manualActive && !closestNpcTarget && !defendTarget && !protectTarget && !supportFlagCarrier && !resourceTarget && noLivingEnemyBases ? nearestEnemyUnit(units, unit, combatTeams, setup) : null);
     const ownBase = baseOf(unit.team, setup);
     let flagReturnTarget = null;
     if (isCaptureFlag) {
@@ -1780,18 +2426,35 @@ function stepGame(game, dt) {
       continue;
     }
 
-    if (!targetTeam && !cleanupTarget && !defendTarget && !protectTarget && !supportFlagCarrier && !resourceTarget && !flagReturnTarget && !flagCarrierTarget && !manualActive) continue;
+    if (manualGroundItem && unit.row === manualGroundItem.row && unit.col === manualGroundItem.col) {
+      if (addInventoryEntryToTeam(game, unit.team, { instanceId: manualGroundItem.instanceId || makeRuntimeId("item"), itemId: manualGroundItem.itemId })) {
+        const pickedItem = itemById(manualGroundItem);
+        groundItems = groundItems.filter((entry) => entry.id !== manualGroundItem.id);
+        killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.name} picked up ${pickedItem?.name || "an item"}.`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
+        clearManualTarget(unit);
+        manualGroundItem = null;
+        manualGroundItemTarget = null;
+      } else {
+        killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.name} could not pick up ${itemLabel(manualGroundItem)}; inventory full.`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
+        clearManualTarget(unit);
+        manualGroundItem = null;
+        manualGroundItemTarget = null;
+      }
+      continue;
+    }
+
+    if (!targetTeam && !cleanupTarget && !closestNpcTarget && !defendTarget && !protectTarget && !supportFlagCarrier && !resourceTarget && !hillTarget && !flagReturnTarget && !flagCarrierTarget && !manualActive && !manualGroundItemTarget) continue;
 
     const enemyBase = targetTeam ? baseOf(targetTeam, setup) : null;
     const range = unitAttackRange(unit);
     unit.cooldown = Math.max(0, unit.cooldown - dt);
     unit.moveTimer = Math.max(0, unit.moveTimer - dt);
-
+    const isInteractingResource = Boolean(resourceTarget && resourceType && manhattan(unit, resourceTarget) <= 1 && board[resourceTarget.row]?.[resourceTarget.col]?.type === resourceType);
 
     let nearbyEnemyUnit = closestEnemyUnitInRange(board, units, unit, setup, combatTeams);
     const manualAttackTarget = manualUnitTarget && canAttack(board, unit, manualUnitTarget, range, setup) ? manualUnitTarget : null;
-    const aggroTarget = units.find((u) => u.id === unit.lastAttackerId && u.hp > 0 && u.team !== unit.team);
-    const chaseTarget = flagCarrierTarget ?? manualUnitTarget ?? defendTarget ?? protectTarget ?? cleanupTarget ?? (aggroTarget && !nearbyEnemyUnit ? aggroTarget : null);
+    const aggroTarget = units.find((u) => u.id === unit.lastAttackerId && u.hp > 0 && areHostileTeams(unit.team, u.team, setup));
+    const chaseTarget = flagCarrierTarget ?? manualUnitTarget ?? closestNpcTarget ?? defendTarget ?? protectTarget ?? cleanupTarget ?? (aggroTarget && !nearbyEnemyUnit ? aggroTarget : null);
     const escortTarget = supportFlagCarrier && !chaseTarget ? supportFlagCarrier : null;
 
     let manualPath = null;
@@ -1803,6 +2466,12 @@ function stepGame(game, dt) {
     } else if (manualResourceTarget) {
       manualPath = findPath(board, units, unit, manualResourceTarget, setup, { range: 1, requireGoal: true });
       manualBlocked = !manualPath && manhattan(unit, manualResourceTarget) > 1;
+    } else if (manualGroundItemTarget) {
+      manualPath = findPath(board, units, unit, manualGroundItemTarget, setup, { range: 0, allowTargetCell: true, requireGoal: true });
+      manualBlocked = !manualPath && !(unit.row === manualGroundItemTarget.row && unit.col === manualGroundItemTarget.col);
+    } else if (manualFollowTarget) {
+      manualPath = findPath(board, units, unit, manualFollowTarget, setup, { range: 1, requireGoal: true });
+      manualBlocked = !manualPath && manhattan(unit, manualFollowTarget) > 1;
     } else if (manualUnitTarget && !manualAttackTarget) {
       manualPath = findPath(board, units, unit, manualUnitTarget, setup, { range, requireGoal: true });
       manualBlocked = !manualPath;
@@ -1816,23 +2485,27 @@ function stepGame(game, dt) {
           manualTileTarget = null;
           manualResourceTarget = null;
           manualResourceType = null;
+          manualFollowTarget = null;
+          manualGroundItem = null;
+          manualGroundItemTarget = null;
         }
       } else {
         delete unit.manualTargetBlockedSince;
       }
     }
 
-    if (unit.moveTimer <= 0 && (unit.freezeTimer ?? 0) <= 0) {
+    if (!isInteractingResource && unit.moveTimer <= 0 && (unit.freezeTimer ?? 0) <= 0) {
       const flagPath = flagReturnTarget ? findPath(board, units, unit, flagReturnTarget, setup, { range: 0, allowTargetCell: true }) : null;
       const chasePath = !flagReturnTarget && !manualTileTarget && chaseTarget ? findPath(board, units, unit, chaseTarget, setup, { range }) : null;
       const escortPath = !flagReturnTarget && !manualActive && !chaseTarget && escortTarget ? findPath(board, units, unit, escortTarget, setup, { range: 1 }) : null;
-      const resourcePath = !flagReturnTarget && !manualResourceTarget && !manualActive && !chaseTarget && !escortTarget && resourceTarget ? findPath(board, units, unit, resourceTarget, setup, { range: 1, requireGoal: true }) : null;
+      const resourcePath = !flagReturnTarget && !manualResourceTarget && !manualGroundItemTarget && !manualActive && !chaseTarget && !escortTarget && resourceTarget ? findPath(board, units, unit, resourceTarget, setup, { range: 1, requireGoal: true }) : null;
+      const hillPath = !flagReturnTarget && !manualActive && !chaseTarget && !escortTarget && !resourceTarget && hillTarget ? findHillPath(board, units, unit, setup) : null;
       const baseApproachRange = isCaptureFlag ? 1 : range;
       const basePath = !flagReturnTarget && !manualActive && !escortTarget && !resourceTarget && enemyBase
         ? findPath(board, units, unit, enemyBase, setup, { range: baseApproachRange }) ?? findPath(board, units, unit, enemyBase, setup, { range: baseApproachRange, avoidOccupied: false })
         : null;
-      const fallbackTarget = flagReturnTarget ?? manualTileTarget ?? chaseTarget ?? escortTarget ?? resourceTarget ?? enemyBase;
-      const next = flagPath?.[0] ?? manualPath?.[0] ?? chasePath?.[0] ?? escortPath?.[0] ?? resourcePath?.[0] ?? basePath?.[0] ?? (fallbackTarget ? bestOpenForwardStep(board, units, unit, fallbackTarget, setup) : null);
+      const fallbackTarget = flagReturnTarget ?? manualTileTarget ?? manualGroundItemTarget ?? manualFollowTarget ?? chaseTarget ?? escortTarget ?? resourceTarget ?? hillTarget ?? enemyBase;
+      const next = flagPath?.[0] ?? manualPath?.[0] ?? chasePath?.[0] ?? escortPath?.[0] ?? resourcePath?.[0] ?? hillPath?.[0] ?? basePath?.[0] ?? (fallbackTarget ? bestOpenForwardStep(board, units, unit, fallbackTarget, setup) : null);
       if (next && !unitOccupies(units, next.row, next.col, setup, unit)) {
         unit.row = next.row;
         unit.col = next.col;
@@ -1857,8 +2530,11 @@ function stepGame(game, dt) {
         addEffect(unit, resourceTarget, unit.team, unit.style);
         if (resourceHit.cleared) {
           unit.resourcesCleared = (unit.resourcesCleared ?? 0) + 1;
+          const resourceItemId = resourceType === "tree" ? "logs" : "ore";
+          const resourceItem = itemById(resourceItemId);
+          const lootedResource = addInventoryEntryToTeam(game, unit.team, { itemId: resourceItemId });
           if (manualResourceTarget) clearManualTarget(unit);
-          killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.name} ${action} ${resourceType === "tree" ? "trees" : "rocks"}. Clear #${resourceHit.deathCount}. Regrows in ${resourceHit.regrowSeconds}s.`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
+          killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.name} ${action} ${resourceType === "tree" ? "trees" : "rocks"} and ${lootedResource ? `collected ${resourceItem?.name || resourceItemId}` : `lost ${resourceItem?.name || resourceItemId}; inventory full`}. Clear #${resourceHit.deathCount}. Regrows in ${resourceHit.regrowSeconds}s.`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
         }
         unit.cooldown = STYLE[unit.style].cooldown;
         continue;
@@ -1882,7 +2558,7 @@ function stepGame(game, dt) {
         for (let row = nearbyEnemyUnit.row - 1; row <= nearbyEnemyUnit.row + 1; row++) {
           for (let col = nearbyEnemyUnit.col - 1; col <= nearbyEnemyUnit.col + 1; col++) {
             if (!inBounds(row, col, sizeOf(setup)) || (row === nearbyEnemyUnit.row && col === nearbyEnemyUnit.col)) continue;
-            const extra = units.find((u) => u.team !== unit.team && u.hp > 0 && u.row === row && u.col === col && combatTeams.includes(u.team));
+            const extra = units.find((u) => areHostileTeams(unit.team, u.team, setup) && u.hp > 0 && u.row === row && u.col === col && combatTeams.includes(u.team));
             if (extra) {
               const splashResult = attackUnit(unit, extra);
               extra.lastAttackedAt = fightTime;
@@ -1913,6 +2589,17 @@ function stepGame(game, dt) {
   respawnQueue = cleanup.respawnQueue;
   logCleanup(cleanup);
 
+  const kothController = isKingHill ? kothControllerTeam(units, setup) : null;
+  if (isKingHill) {
+    const occupants = hillOccupants(units, setup);
+    const contested = occupants.length > 0 && !kothController;
+    for (const unit of occupants) {
+      if (contested) unit.hillContestedTime = (unit.hillContestedTime ?? 0) + dt;
+      else if (kothController && areAlliedTeams(unit.team, kothController, setup)) unit.hillUncontestedTime = (unit.hillUncontestedTime ?? 0) + dt;
+    }
+  }
+  if (isKingHill && kothController) kothScores[kothController] = (kothScores[kothController] ?? 0) + dt;
+
   const nextGame = {
     ...game,
     board,
@@ -1921,20 +2608,27 @@ function stepGame(game, dt) {
     unitArchive,
     bases,
     ctfScores,
+    kothScores,
+    kothController,
     gold,
+    loot: game.loot || makeLoot(setup),
     killFeed,
     splats: objectFromArray(splats),
     effects: objectFromArray(effects),
+    groundItems: objectFromGroundItems(groundItems),
     fightTime,
+    nextNpcSpawnAt: game.nextNpcSpawnAt,
+    nextNpcSpawnAtByStyle: game.nextNpcSpawnAtByStyle || {},
     log: logEntries,
   };
 
   const aliveBases = aliveTeamsFromBases(bases, setup);
   const remainingCombat = teamsWithCombatPresence(bases, units, respawnQueue, setup);
   const ctfWinner = isCaptureFlag ? activeTeams(setup).find((team) => (ctfScores[team] ?? 0) >= (setup.ctfScoreLimit ?? 3)) : null;
+  const kothWinner = isKingHill ? activeTeams(setup).find((team) => (kothScores[team] ?? 0) >= (setup.kothTimeLimit ?? 60)) : null;
   const hitTimeLimit = Number(setup.matchTimeLimit || 0) > 0 && fightTime >= Number(setup.matchTimeLimit || 0);
-  if (ctfWinner || hitTimeLimit || (!isCaptureFlag && remainingCombat.length <= 1 && aliveBases.length <= 1)) {
-    nextGame.results = summarizeResults(nextGame, ctfWinner ? "capture limit reached" : hitTimeLimit ? "time limit" : "last combat presence");
+  if (ctfWinner || kothWinner || hitTimeLimit || (!isCaptureFlag && remainingCombat.length <= 1 && aliveBases.length <= 1)) {
+    nextGame.results = summarizeResults(nextGame, ctfWinner ? "capture limit reached" : kothWinner ? "hill timer reached" : hitTimeLimit ? "time limit" : "last combat presence");
     nextGame.finished = true;
   }
   return nextGame;
@@ -1945,6 +2639,11 @@ function runDevTests() {
   console.assert(activeTeams(setup4).length === 4, "4-player setup should activate four teams");
   const setup3 = { ...DEFAULT_SETUP, players: 3, gridSize: 17 };
   console.assert(JSON.stringify(activeTeams(setup3)) === JSON.stringify(["red", "green", "blue"]), "3-player setup should activate red, green, and blue teams");
+  const setup8 = { ...DEFAULT_SETUP, players: 8, gridSize: 30, baseZoneSize: 5 };
+  console.assert(activeTeams(setup8).length === 8 && activeTeams(setup8).includes("cyan"), "8-player setup should activate all arena slots");
+  console.assert(baseOf("orange", setup8).row === 2 && baseOf("orange", setup8).col === 15, "Orange should use the top-center base in 8-player arena layout");
+  console.assert(baseOf("pink", setup8).row === 27 && baseOf("pink", setup8).col === 15, "Pink should use the bottom-center base in 8-player arena layout");
+  console.assert(ownerFor(15, 2, setup8) === "green", "8-player arena should assign middle-left zone to Green");
   console.assert(baseOf("blue", 17).row === 15 && baseOf("blue", 17).col === 15, "3-player blue base should use the bottom-right starter patch");
   console.assert(ownerFor(15, 1, setup3) === "void", "3-player mode should make the fourth bottom-left zone void/unbuildable");
   const board3 = makeBoard(setup3);
@@ -2144,7 +2843,8 @@ function runDevTests() {
   losBoard[1][2].type = "wall";
   console.assert(!lineClear(losBoard, { row: 1, col: 1 }, { row: 1, col: 3 }, { ...DEFAULT_SETUP, players: 2, gridSize: 17 }), "Line of sight should be blocked by stone walls between attacker and target");
   const riverBoard = makeBoard({ ...DEFAULT_SETUP, mapTemplate: "river_cross" });
-  console.assert(riverBoard[midOf(DEFAULT_SETUP.gridSize)][0].type === "water" || riverBoard[midOf(DEFAULT_SETUP.gridSize)][0].type === "road", "River Cross template should alter the map layout");
+  console.assert(riverBoard[0][Math.floor(DEFAULT_SETUP.gridSize / 2)].type === "tree", "Every map should have a clearable outer tree wall");
+  console.assert(riverBoard[midOf(DEFAULT_SETUP.gridSize)][1].type === "water" || riverBoard[midOf(DEFAULT_SETUP.gridSize)][1].type === "road", "River Cross template should alter the map layout inside the outer wall");
 }
 if (typeof window !== "undefined" && !window.__quadrantsOnlineTestsRan) {
   window.__quadrantsOnlineTestsRan = true;
@@ -2161,6 +2861,49 @@ function Button({ children, onClick, disabled, variant = "default", className = 
 
 function Pill({ children, tone = "default" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
+}
+
+function GameContextMenu({ menu, onClose }) {
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => onClose?.();
+    const onKey = (event) => { if (event.key === "Escape") close(); };
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu, onClose]);
+  if (!menu) return null;
+  const items = menu.items || [];
+  return (
+    <div className="context-menu" style={{ left: menu.x, top: menu.y }} onClick={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
+      {menu.title && <div className="context-menu-title">{menu.title}</div>}
+      {items.map((item, index) => item.type === "divider" ? (
+        <div key={`divider-${index}`} className="context-menu-divider" />
+      ) : (
+        <button
+          key={`${item.label}-${index}`}
+          type="button"
+          disabled={item.disabled}
+          title={item.title || ""}
+          onClick={() => {
+            if (item.disabled) return;
+            onClose?.();
+            item.action?.();
+          }}
+        >
+          {item.icon && <span className="context-menu-icon">{item.icon}</span>}
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function StyleIcon({ styleId, size = "md" }) {
@@ -2190,13 +2933,14 @@ function UnitToken({ unit, bump, showName = true }) {
   const hpPct = Math.max(0, Math.min(100, ((unit.hp ?? 0) / Math.max(1, maxHp(unit))) * 100));
   const teleporting = unit.targetOverride === "homeTeleport" && unit.homeTeleportStartedAt != null;
   const teleportPct = teleporting ? Math.max(0, Math.min(100, 100 * (1 - Math.max(0, HOME_TELEPORT_SECONDS - ((unit.currentFightTime ?? 0) - unit.homeTeleportStartedAt)) / HOME_TELEPORT_SECONDS))) : 0;
+  const coreColor = unit.team === "npc" ? "#ffffff" : (TEAM_META[unit.team]?.dark || "#1c1917");
   const ringStyle = {
     borderColor: "transparent",
-    background: `radial-gradient(circle at center, ${TEAM_META[unit.team]?.dark || "#1c1917"} 55%, transparent 57%), conic-gradient(#22c55e 0 ${hpPct}%, rgba(127,29,29,.95) ${hpPct}% 100%)`,
+    background: `radial-gradient(circle at center, ${coreColor} 66%, transparent 68%), conic-gradient(#22c55e 0 ${hpPct}%, rgba(127,29,29,.95) ${hpPct}% 100%)`,
   };
   return (
-    <div className={`unit-token ${bump ? "bump" : ""}`} title={unit.name}>
-      <div className={`unit-token-circle ${teleporting ? "teleporting" : ""}`} style={ringStyle}>
+    <div className={`unit-token unit-size-${unitSize(unit)} ${bump ? "bump" : ""} ${unit.team === "npc" ? "npc-unit" : ""}`} title={unit.name}>
+      <div className={`unit-token-circle ${teleporting ? "teleporting" : ""} ${unit.team === "npc" ? "npc-token" : ""}`} style={ringStyle}>
         <StyleIcon styleId={unit.style} />
         {teleporting && <div className="teleport-ring" style={{ background: `conic-gradient(#c084fc 0 ${teleportPct}%, transparent ${teleportPct}% 100%)` }} />}
         {unit.carryingFlagTeam && <div className="flag-icon-overlay" title={`Carrying ${TEAM_META[unit.carryingFlagTeam]?.name || "enemy"} flag`}>🚩</div>}
@@ -2273,7 +3017,7 @@ function statGrid(stats) {
 function UnitStatSummary({ unit }) {
   const baseStats = STYLE[unit.style]?.baseStats ?? {};
   return (
-    <div className="stat-grid stat-grid-wide">
+    <div className="stat-grid stat-grid-wide unit-stat-summary">
       {STAT_KEYS.map((stat) => {
         const level = unit.stats?.[stat]?.level ?? 1;
         const base = baseStats[stat] ?? 1;
@@ -2297,6 +3041,23 @@ function GearIcon({ item, slot, size = "md" }) {
   const src = gear?.icon || EQUIPMENT_SLOT_META[slot]?.image || "weapon_slot.png";
   const label = gear?.name || EQUIPMENT_SLOT_META[slot]?.name || "Empty";
   return <img src={asset(src)} alt={label} className={`gear-icon gear-icon-${size} ${gear ? "filled" : "empty"}`} draggable={false} />;
+}
+
+function setInventoryDragPreview(event, entry) {
+  const item = itemById(entry);
+  if (!item || !event?.dataTransfer || typeof document === "undefined") return;
+  const preview = document.createElement("div");
+  preview.className = "inventory-drag-preview";
+  const img = document.createElement("img");
+  img.src = asset(item.icon || EQUIPMENT_SLOT_META[item.slot]?.image || "weapon_slot.png");
+  img.alt = item.name;
+  const name = document.createElement("span");
+  name.textContent = item.name;
+  preview.appendChild(img);
+  preview.appendChild(name);
+  document.body.appendChild(preview);
+  event.dataTransfer.setDragImage(preview, 34, 34);
+  window.setTimeout(() => preview.remove(), 0);
 }
 
 function GearBonusList({ bonuses }) {
@@ -2365,6 +3126,19 @@ function currentPlayers(lobby) {
   return Object.values(lobby?.players || {}).filter(Boolean).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
 }
 
+function playerForTeam(lobby, team) {
+  return currentPlayers(lobby).find((p) => p.team === team) || null;
+}
+
+function teamDisplayName(lobby, team) {
+  const player = playerForTeam(lobby, team);
+  return player?.name || TEAM_META[team]?.name || team;
+}
+
+function teamDisplayLabel(lobby, team) {
+  return `${TEAM_META[team]?.emoji || ""} ${teamDisplayName(lobby, team)}`.trim();
+}
+
 function canPlayerControlTarget(player, team) {
   return Boolean(player?.team && player.team === team);
 }
@@ -2430,6 +3204,7 @@ function TeamSelect({ lobby, player, disabled, onChoose }) {
             <span>{TEAM_META[team].emoji}</span>
             <b>{TEAM_META[team].name}</b>
             <small>{takenBy ? takenBy.name : selected ? "You" : "Open"}</small>
+            {Boolean(lobby.setup?.teamMode) && <small className="team-alliance-chip">{teamAllianceLabel(team, lobby.setup)}</small>}
           </button>
         );
       })}
@@ -2441,14 +3216,15 @@ function TargetSelect({ team, lobby, onChange, disabled = false }) {
   const game = lobby.game;
   const teams = targetableBaseTeams(game.bases || {}, game.setup, team);
   const current = game.orders?.[team]?.target;
-  const value = current === "blank" || current === "defend" || teams.includes(current) ? current : "blank";
+  const value = current === "blank" || current === "defend" || current === "hill" || teams.includes(current) ? current : "blank";
   return (
     <select value={value} disabled={disabled} title={disabled ? "Only this team's player can change this target" : "Choose target"} onChange={(e) => onChange(team, e.target.value)}>
       <option value="blank">Blank / random</option>
+      {(game.setup?.gameMode || "classic") === "king_hill" && <option value="hill">King of the Hill</option>}
       <option value="defend">Defend base</option>
       {teams.map((target) => (
         <option key={target} value={target}>
-          Target {TEAM_META[target].name}
+          Target {teamDisplayName(lobby, target)}
         </option>
       ))}
     </select>
@@ -2471,6 +3247,8 @@ function UnitTargetSelect({ lobby, unit, onChange, disabled = false, allowManual
     >
       <option value="inherit">Use team target</option>
       <option value="blank">Blank / random</option>
+      {(game.setup?.gameMode || "classic") === "king_hill" && <option value="hill">King of the Hill</option>}
+      <option value="closestNpc">Closest NPC</option>
       {resourceTargetType(unit) === "tree" && <option value="resource_tree">Chop enemy trees</option>}
       {resourceTargetType(unit) === "rock" && <option value="resource_rock">Mine enemy rocks</option>}
       <option value="defend">Defend base</option>
@@ -2479,7 +3257,7 @@ function UnitTargetSelect({ lobby, unit, onChange, disabled = false, allowManual
       {allowManualTarget && <option value="manual">Select tile/unit/resource...</option>}
       {teams.map((target) => (
         <option key={target} value={target}>
-          Target {TEAM_META[target].name}
+          Target {teamDisplayName(lobby, target)}
         </option>
       ))}
     </select>
@@ -2489,6 +3267,8 @@ function UnitTargetSelect({ lobby, unit, onChange, disabled = false, allowManual
 function targetLabel(value, unit, game) {
   const actual = value && value !== "inherit" ? value : game?.orders?.[unit?.team]?.target;
   if (!actual || actual === "blank") return "Blank / random";
+  if (actual === "hill") return "King of the Hill";
+  if (actual === "closestNpc") return "Closest NPC";
   if (actual === "defend") return "Defend base";
   if (actual === "protectCarrier") return "Protect flag carrier";
   if (actual === "homeTeleport") return `Home teleport${unit?.homeTeleportStartedAt != null ? ` (${Math.max(0, Math.ceil(HOME_TELEPORT_SECONDS - ((game?.fightTime || 0) - unit.homeTeleportStartedAt)))}s)` : ""}`;
@@ -2499,8 +3279,16 @@ function targetLabel(value, unit, game) {
       const targetUnit = game?.units?.[unit.manualTargetUnitId];
       return `Manual attack: ${targetUnit?.name || (unit.manualTargetUnitId ? String(unit.manualTargetUnitId).slice(-6) : "unit")}`;
     }
+    if (unit?.manualTargetType === "follow") {
+      const targetUnit = game?.units?.[unit.manualTargetUnitId];
+      return `Follow: ${targetUnit?.name || (unit.manualTargetUnitId ? String(unit.manualTargetUnitId).slice(-6) : "unit")}`;
+    }
     if (unit?.manualTargetType === "tile") return `Manual move: ${unit.manualTargetRow},${unit.manualTargetCol}`;
     if (unit?.manualTargetType === "resource") return `Manual ${unit.manualResourceType === "tree" ? "chop" : "mine"}: ${unit.manualTargetRow},${unit.manualTargetCol}`;
+    if (unit?.manualTargetType === "groundItem") {
+      const item = groundItemsArray(game?.groundItems).find((entry) => entry.id === unit.manualGroundItemId);
+      return `Pick up: ${itemLabel(item)}`;
+    }
     return "Select tile/unit/resource";
   }
   return TEAM_META[actual] ? `Target ${TEAM_META[actual].name}` : "Unknown";
@@ -2513,6 +3301,7 @@ function selectedTargetPreview(game, unit, activeTeam) {
   const respawns = arrayFromObject(game.respawnQueue);
   const bases = game.bases || {};
   const board = game.board || [];
+  const groundItems = game.groundItems || {};
   const combatTeams = teamsWithCombatPresence(bases, units, respawns, setup);
   if (unit.targetOverride === "homeTeleport") {
     const ownBase = baseOf(unit.team, setup);
@@ -2523,26 +3312,36 @@ function selectedTargetPreview(game, unit, activeTeam) {
       const ownBase = baseOf(unit.team, setup);
       return { kind: "base", row: ownBase.row, col: ownBase.col, label: "Return flag" };
     }
-    const enemyCarrier = enemyFlagCarrierForTeam(units, unit.team, combatTeams);
+    const enemyCarrier = enemyFlagCarrierForTeam(units, unit.team, combatTeams, setup);
     if (enemyCarrier) return { kind: "unit", row: enemyCarrier.row, col: enemyCarrier.col, unitId: enemyCarrier.id, label: "Enemy flag carrier" };
   }
-  const manual = manualTargetForUnit(unit, board, units, setup);
+  const manual = manualTargetForUnit(unit, board, units, setup, groundItems);
   if (manual.kind === "unit") return { kind: "unit", row: manual.target.row, col: manual.target.col, unitId: manual.target.id, label: "Manual unit target" };
+  if (manual.kind === "follow") return { kind: "unit", row: manual.target.row, col: manual.target.col, unitId: manual.target.id, label: "Follow target" };
   if (manual.kind === "tile") return { kind: "tile", row: manual.target.row, col: manual.target.col, label: "Manual move target" };
   if (manual.kind === "resource") return { kind: "resource", row: manual.target.row, col: manual.target.col, label: manual.resourceType === "tree" ? "Manual tree target" : "Manual rock target" };
+  if (manual.kind === "groundItem") return { kind: "tile", row: manual.target.row, col: manual.target.col, label: `Pick up ${itemLabel(manual.item)}` };
 
   const ordered = effectiveTargetOrder(unit, game);
+  if (ordered === "hill" && (game.setup?.gameMode || "classic") === "king_hill") {
+    const hill = hillCenter(setup);
+    return { kind: "hill", row: hill.row, col: hill.col, label: "King of the Hill" };
+  }
   if (ordered === "resource_tree" || ordered === "resource_rock") {
     const resourceType = ordered === "resource_tree" ? "tree" : "rock";
     const target = nearestResourceTile(board, units, unit, setup, resourceType);
     if (target) return { kind: "resource", row: target.row, col: target.col, label: resourceType === "tree" ? "Tree target" : "Rock target" };
+  }
+  if (ordered === "closestNpc") {
+    const target = nearestEnemyUnit(units, unit, ["npc"], setup);
+    if (target) return { kind: "unit", row: target.row, col: target.col, unitId: target.id, label: "Closest NPC" };
   }
   if (ordered === "defend") {
     const target = defendTargetForUnit(board, units, unit, setup, combatTeams, bases);
     if (target) return { kind: "unit", row: target.row, col: target.col, unitId: target.id, label: "Defend target" };
   }
   if (ordered === "protectCarrier") {
-    const carrier = alliedFlagCarrierForTeam(units, unit.team, unit.id);
+    const carrier = alliedFlagCarrierForTeam(units, unit.team, unit.id, setup);
     const threat = carrier ? enemyThreatNearUnit(board, units, carrier, unit, combatTeams, setup) : null;
     if (threat) return { kind: "unit", row: threat.row, col: threat.col, unitId: threat.id, label: "Threat to carrier" };
     if (carrier) return { kind: "unit", row: carrier.row, col: carrier.col, unitId: carrier.id, label: "Escort carrier" };
@@ -2600,17 +3399,18 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, stat
   );
 }
 
-function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onChooseTeam, onLeave }) {
+function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onChooseTeam, onChooseAlliance, onLeave, onHostSetPlayerTeam, onHostKickPlayer, onHostSetHost }) {
   const players = currentPlayers(lobby);
   const player = lobby.players?.[playerId];
   const enoughPlayers = activeGamePlayers(lobby).length >= 2 && activeGamePlayers(lobby).length === activeTeams(lobby.setup).length;
+  const [settingsTab, setSettingsTab] = useState("match");
 
   return (
     <div className="panel-stack">
       <section className="card hero-card">
         <div>
           <h2>Lobby {lobby.code}</h2>
-          <p>Share this code with players. The host can start when active team slots are filled.</p>
+          <p>Share this code with players. The host can start when active team slots are filled. 5–8 player games use the larger arena layout.</p>
         </div>
         <div>
           <div className="lobby-code">{lobby.code}</div>
@@ -2621,88 +3421,205 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
         </div>
       </section>
 
-      <section className="grid two">
+      <section className="grid lobby-grid-split">
         <div className="card">
           <h3>Players</h3>
           <div className="player-list">
-            {players.map((p) => (
-              <div className="player-row" key={p.id}>
-                <span className={`connection-dot ${p.connected ? "on" : ""}`} />
-                <span className="player-name">{p.name}</span>
-                <span>{p.team ? `${TEAM_META[p.team].emoji} ${TEAM_META[p.team].name}` : "Spectator"}</span>
-                {lobby.hostId === p.id && <Pill tone="host">Host</Pill>}
-              </div>
-            ))}
+            {players.map((p) => {
+              const active = activeTeams(lobby.setup || DEFAULT_SETUP);
+              const occupied = new Set(players.filter((other) => other.id !== p.id).map((other) => other.team).filter(Boolean));
+              return (
+                <div className="player-row player-row-hostable" key={p.id}>
+                  <span className={`connection-dot ${p.connected ? "on" : ""}`} />
+                  <span className="player-name">{p.name}</span>
+                  <span className="player-team-label">{p.team ? `${TEAM_META[p.team].emoji} ${TEAM_META[p.team].name}` : "Spectator"}</span>
+                  {Boolean(lobby.setup?.teamMode && p.team) && (
+                    <label className="player-alliance-picker">
+                      <span>Side</span>
+                      <select
+                        value={normalizeTeamAlliances(lobby.setup)[p.team] || DEFAULT_TEAM_ALLIANCES[p.team]}
+                        disabled={!(isHost || p.id === playerId)}
+                        onChange={(e) => onChooseAlliance?.(p.team, e.target.value)}
+                        title="Team-mode alliance"
+                      >
+                        {TEAM_MODE_ALLIANCES.map((alliance) => <option key={alliance.id} value={alliance.id}>{alliance.emoji} {alliance.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {lobby.hostId === p.id && <Pill tone="host">Host</Pill>}
+                  {isHost && (
+                    <div className="host-player-controls">
+                      <select
+                        value={p.team || ""}
+                        title="Host color/team assignment"
+                        onChange={(e) => onHostSetPlayerTeam?.(p.id, e.target.value || null)}
+                      >
+                        <option value="">Spectator</option>
+                        {active.map((team) => (
+                          <option key={team} value={team} disabled={occupied.has(team)}>
+                            {TEAM_META[team].emoji} {TEAM_META[team].name}{occupied.has(team) ? " (taken)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <Button onClick={() => onHostSetHost?.(p.id)} disabled={lobby.hostId === p.id || !p.connected}>Make Host</Button>
+                      <Button onClick={() => onHostKickPlayer?.(p.id)} disabled={p.id === playerId}>Remove</Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        <div className="card">
-          <h3>Match Settings {isHost ? "" : "(host only)"}</h3>
-          <div className="settings-grid">
-            <label>
-              Players
-              <select disabled={!isHost} value={lobby.setup.players} onChange={(e) => onUpdateSetup({ players: Number(e.target.value) })}>
-                <option value={2}>2 players</option>
-                <option value={3}>3 players</option>
-                <option value={4}>4 players</option>
-              </select>
-            </label>
-            <label>
-              Game mode
-              <select disabled={!isHost} value={lobby.setup.gameMode || "classic"} onChange={(e) => onUpdateSetup({ gameMode: e.target.value })}>
-                {Object.entries(GAME_MODES).map(([id, mode]) => <option key={id} value={id}>{mode.name}</option>)}
-              </select>
-            </label>
-            <label>
-              Map template
-              <select disabled={!isHost} value={lobby.setup.mapTemplate || "classic"} onChange={(e) => onUpdateSetup({ mapTemplate: e.target.value })}>
-                {Object.entries(MAP_TEMPLATES).map(([id, map]) => <option key={id} value={id}>{map.name}</option>)}
-              </select>
-            </label>
-            <label>
-              CTF score limit
-              <input disabled={!isHost || (lobby.setup.gameMode || "classic") !== "capture_flag"} type="number" min="1" max="10" value={lobby.setup.ctfScoreLimit || 3} onChange={(e) => onUpdateSetup({ ctfScoreLimit: Number(e.target.value) })} />
-            </label>
-            <label>
-              Time limit
-              <select disabled={!isHost} value={lobby.setup.matchTimeLimit || DEFAULT_SETUP.matchTimeLimit} onChange={(e) => onUpdateSetup({ matchTimeLimit: Number(e.target.value) })}>
-                <option value={300}>5 minutes</option>
-                <option value={600}>10 minutes</option>
-                <option value={900}>15 minutes</option>
-                <option value={1800}>30 minutes</option>
-                <option value={3600}>60 minutes</option>
-              </select>
-            </label>
-            <label>
-              Grid
-              <select disabled={!isHost} value={lobby.setup.gridSize} onChange={(e) => onUpdateSetup({ gridSize: Number(e.target.value) })}>
-                <option value={13}>13x13 compact</option>
-                <option value={15}>15x15</option>
-                <option value={17}>17x17 default</option>
-                <option value={20}>20x20 large</option>
-                <option value={25}>25x25 huge</option>
-              </select>
-            </label>
-            <label>
-              Base zone
-              <select disabled={!isHost} value={baseZoneSizeFor(lobby.setup)} onChange={(e) => onUpdateSetup({ baseZoneSize: Number(e.target.value) })}>
-                <option value={3}>3x3 base zone</option>
-                <option value={5}>5x5 base zone</option>
-              </select>
-            </label>
-            <label>
-              Starting gold
-              <input disabled={!isHost} type="number" value={lobby.setup.startingGold} onChange={(e) => onUpdateSetup({ startingGold: Number(e.target.value) })} />
-            </label>
-            <label>
-              Max units
-              <input disabled={!isHost} type="number" value={lobby.setup.maxUnits} onChange={(e) => onUpdateSetup({ maxUnits: Number(e.target.value) })} />
-            </label>
-            <label>
-              Base HP
-              <input disabled={!isHost} type="number" value={lobby.setup.baseHp} onChange={(e) => onUpdateSetup({ baseHp: Number(e.target.value) })} />
-            </label>
+        <div className="card lobby-settings-card">
+          <div className="settings-card-header">
+            <h3>{settingsTab === "match" ? "Match Settings" : settingsTab === "npc" ? "NPC List" : "Custom Effects"} {isHost ? "" : "(host only)"}</h3>
+            <div className="shop-tabs compact-tabs">
+              <button className={settingsTab === "match" ? "active" : ""} onClick={() => setSettingsTab("match")}>Match Settings</button>
+              <button className={settingsTab === "npc" ? "active" : ""} onClick={() => setSettingsTab("npc")}>NPC List</button>
+              <button className={settingsTab === "effects" ? "active" : ""} onClick={() => setSettingsTab("effects")}>Custom effects</button>
+            </div>
           </div>
+
+          {settingsTab === "match" && (
+            <div className="settings-grid">
+              <label>
+                Players
+                <select disabled={!isHost} value={lobby.setup.players} onChange={(e) => onUpdateSetup({ players: Number(e.target.value) })}>
+                  {[2, 3, 4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>{count} players{count >= 5 ? " • arena layout" : ""}</option>)}
+                </select>
+              </label>
+              <label>
+                Game mode
+                <select disabled={!isHost} value={lobby.setup.gameMode || "classic"} onChange={(e) => onUpdateSetup({ gameMode: e.target.value })}>
+                  {Object.entries(GAME_MODES).map(([id, mode]) => <option key={id} value={id}>{mode.name}</option>)}
+                </select>
+              </label>
+              <label className="toggle-check lobby-toggle-row">
+                <input disabled={!isHost} type="checkbox" checked={Boolean(lobby.setup.teamMode)} onChange={(e) => onUpdateSetup({ teamMode: e.target.checked })} /> Team mode
+              </label>
+              <label>
+                Map template
+                <select disabled={!isHost} value={lobby.setup.mapTemplate || "classic"} onChange={(e) => onUpdateSetup({ mapTemplate: e.target.value })}>
+                  {Object.entries(MAP_TEMPLATES).map(([id, map]) => <option key={id} value={id}>{map.name}</option>)}
+                </select>
+              </label>
+              <label>
+                CTF score limit
+                <input disabled={!isHost || (lobby.setup.gameMode || "classic") !== "capture_flag"} type="number" min="1" max="10" value={lobby.setup.ctfScoreLimit || 3} onChange={(e) => onUpdateSetup({ ctfScoreLimit: Number(e.target.value) })} />
+              </label>
+              <label>
+                KOTH hold time
+                <input disabled={!isHost || (lobby.setup.gameMode || "classic") !== "king_hill"} type="number" min="10" max="600" value={lobby.setup.kothTimeLimit || DEFAULT_SETUP.kothTimeLimit} onChange={(e) => onUpdateSetup({ kothTimeLimit: Number(e.target.value) })} />
+              </label>
+              <label>
+                Time limit
+                <select disabled={!isHost} value={lobby.setup.matchTimeLimit || DEFAULT_SETUP.matchTimeLimit} onChange={(e) => onUpdateSetup({ matchTimeLimit: Number(e.target.value) })}>
+                  <option value={300}>5 minutes</option>
+                  <option value={600}>10 minutes</option>
+                  <option value={900}>15 minutes</option>
+                  <option value={1800}>30 minutes</option>
+                  <option value={3600}>60 minutes</option>
+                </select>
+              </label>
+              <label>
+                Grid
+                <select disabled={!isHost} value={lobby.setup.gridSize} onChange={(e) => onUpdateSetup({ gridSize: Number(e.target.value) })}>
+                  <option value={13}>13x13 compact</option>
+                  <option value={15}>15x15</option>
+                  <option value={17}>17x17 default</option>
+                  <option value={20}>20x20 large</option>
+                  <option value={25}>25x25 huge</option>
+                  <option value={30}>30x30 arena</option>
+                </select>
+              </label>
+              <label>
+                Base zone
+                <select disabled={!isHost} value={baseZoneSizeFor(lobby.setup)} onChange={(e) => onUpdateSetup({ baseZoneSize: Number(e.target.value) })}>
+                  <option value={3}>3x3 base zone</option>
+                  <option value={5}>5x5 base zone</option>
+                </select>
+              </label>
+              <label>
+                Starting gold
+                <input disabled={!isHost} type="number" value={lobby.setup.startingGold} onChange={(e) => onUpdateSetup({ startingGold: Number(e.target.value) })} />
+              </label>
+              <label className="toggle-check lobby-toggle-row restock-toggle-row">
+                <input disabled={!isHost} type="checkbox" checked={Boolean(lobby.setup.restockGoldOnContinued)} onChange={(e) => onUpdateSetup({ restockGoldOnContinued: e.target.checked })} /> Restock gold on continued
+              </label>
+              <label>
+                Restock gold
+                <input disabled={!isHost || !lobby.setup.restockGoldOnContinued} type="number" min="0" value={lobby.setup.continuedRestockGold ?? DEFAULT_SETUP.continuedRestockGold} onChange={(e) => onUpdateSetup({ continuedRestockGold: Number(e.target.value) })} />
+              </label>
+              <label>
+                Max units
+                <input disabled={!isHost} type="number" value={lobby.setup.maxUnits} onChange={(e) => onUpdateSetup({ maxUnits: Number(e.target.value) })} />
+              </label>
+              <label>
+                Base HP
+                <input disabled={!isHost} type="number" value={lobby.setup.baseHp} onChange={(e) => onUpdateSetup({ baseHp: Number(e.target.value) })} />
+              </label>
+            </div>
+          )}
+
+          {settingsTab === "npc" && (
+            <div className="settings-grid npc-settings-grid">
+              <label className="toggle-check lobby-toggle-row">
+                <input disabled={!isHost} type="checkbox" checked={Boolean(lobby.setup.npcSpawns)} onChange={(e) => onUpdateSetup({ npcSpawns: e.target.checked })} /> NPC spawns
+              </label>
+              <div className="npc-list-box wide-npc-box npc-config-card">
+                <b>Goblin</b>
+                <div className="npc-inline-controls">
+                  <label>
+                    Spawned goblins
+                    <input disabled={!isHost || !lobby.setup.npcSpawns} type="number" min="0" max="10" value={lobby.setup.goblinSpawnAmount ?? lobby.setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount} onChange={(e) => onUpdateSetup({ goblinSpawnAmount: Number(e.target.value), npcSpawnAmount: Number(e.target.value) })} />
+                  </label>
+                  <label>
+                    Goblin spawn rate
+                    <select disabled={!isHost || !lobby.setup.npcSpawns} value={lobby.setup.goblinSpawnInterval ?? lobby.setup.npcSpawnInterval ?? DEFAULT_SETUP.goblinSpawnInterval} onChange={(e) => onUpdateSetup({ goblinSpawnInterval: Number(e.target.value), npcSpawnInterval: Number(e.target.value) })}>
+                      <option value={30}>Every 30 seconds</option>
+                      <option value={60}>Every 1 minute</option>
+                      <option value={120}>Every 2 minutes</option>
+                      <option value={300}>Every 5 minutes</option>
+                    </select>
+                  </label>
+                </div>
+                <span>{lobby.setup.npcSpawns ? `Center-area spawn every ${formatDuration(lobby.setup.goblinSpawnInterval ?? lobby.setup.npcSpawnInterval ?? DEFAULT_SETUP.goblinSpawnInterval)} • ${lobby.setup.goblinSpawnAmount ?? lobby.setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount} max alive` : "Disabled"}</span>
+                <span>30 HP • 10 Atk / 10 Str / 10 Def / 10 Mag • Speed 3</span>
+                <span>Always drops Bones ({GEAR_ITEMS.bones.prayerXp} Prayer XP).</span>
+                <span>Roll table: {goblinLootChanceRows().map((row) => row.type === "gold" ? `Gold ${chanceLabel(row.chance)}` : `${itemById(row.itemId)?.name || row.itemId} ${chanceLabel(row.chance)}`).join(" • ")}</span>
+              </div>
+              <div className="npc-list-box wide-npc-box npc-config-card">
+                <b>Hill Giant</b>
+                <div className="npc-inline-controls">
+                  <label>
+                    Spawned hill giants
+                    <input disabled={!isHost || !lobby.setup.npcSpawns} type="number" min="0" max="5" value={lobby.setup.hillGiantSpawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount} onChange={(e) => onUpdateSetup({ hillGiantSpawnAmount: Number(e.target.value) })} />
+                  </label>
+                  <label>
+                    Hill giant spawn rate
+                    <select disabled={!isHost || !lobby.setup.npcSpawns} value={lobby.setup.hillGiantSpawnInterval ?? DEFAULT_SETUP.hillGiantSpawnInterval} onChange={(e) => onUpdateSetup({ hillGiantSpawnInterval: Number(e.target.value) })}>
+                      <option value={30}>Every 30 seconds</option>
+                      <option value={60}>Every 1 minute</option>
+                      <option value={120}>Every 2 minutes</option>
+                      <option value={300}>Every 5 minutes</option>
+                    </select>
+                  </label>
+                </div>
+                <span>{lobby.setup.npcSpawns ? `2x2 center-area spawn every ${formatDuration(lobby.setup.hillGiantSpawnInterval ?? DEFAULT_SETUP.hillGiantSpawnInterval)} • ${lobby.setup.hillGiantSpawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount} max alive` : "Disabled"}</span>
+                <span>100 HP • 30 Atk / 30 Str / 30 Def / 1 Mag / 1 Rng / 1 Prayer • Speed 5</span>
+                <span>Always drops Big Bones ({GEAR_ITEMS.big_bones.prayerXp} Prayer XP, {GEAR_ITEMS.big_bones.sellValue}gp).</span>
+                <span>Roll table: {hillGiantLootChanceRows().map((row) => row.type === "gold" ? `Gold ${chanceLabel(row.chance)} (${row.min}-${row.max}g)` : `${itemById(row.itemId)?.name || row.itemId} ${chanceLabel(row.chance)}${row.max ? ` (${row.min || 1}-${row.max})` : ""}`).join(" • ")}</span>
+              </div>
+            </div>
+          )}
+
+          {settingsTab === "effects" && (
+            <div className="npc-list-box wide-npc-box">
+              <b>Custom effects</b>
+              <span>No custom effects are active yet. This tab is reserved for future modifiers such as poison maps, prayer altars, wilderness skulls, and KOTH zones.</span>
+            </div>
+          )}
         </div>
       </section>
 
@@ -2750,7 +3667,7 @@ function reachableRoadKeys(board, team, setup) {
   return out;
 }
 
-function ReadyPanel({ lobby, playerId, phase, onToggleReady, isHost, onAdvance, advanceText, canAdvance }) {
+function ReadyPanel({ lobby, playerId, phase, onToggleReady, isHost, onAdvance, advanceText, canAdvance, blockReadyReason = "", connectionStatus = null }) {
   const players = activeGamePlayers(lobby);
   const ready = readyMap(lobby, phase);
   const meReady = Boolean(ready[playerId]);
@@ -2758,17 +3675,21 @@ function ReadyPanel({ lobby, playerId, phase, onToggleReady, isHost, onAdvance, 
     <section className="card compact">
       <div className="section-title">
         <h3>{phase === "build" ? "Build Finalization" : "Buy Finalization"}</h3>
-        <Button onClick={() => onToggleReady(!meReady)} variant={meReady ? "success" : "primary"}>
-          {meReady ? "Unfinalize" : "Finalize"}
+        <Button onClick={() => { if (!meReady && blockReadyReason) { alert(blockReadyReason); return; } onToggleReady(!meReady); }} variant={meReady ? "success" : "primary"} className="ready-big-btn">
+          {meReady ? "Unready" : "Ready"}
         </Button>
       </div>
       <div className="ready-list">
-        {players.map((p) => (
-          <div key={p.id} className="ready-row">
-            <span>{TEAM_META[p.team]?.emoji} {p.name}</span>
-            <Pill tone={ready[p.id] ? "ready" : "waiting"}>{ready[p.id] ? "Ready" : "Waiting"}</Pill>
-          </div>
-        ))}
+        {players.map((p) => {
+          const needsConnection = phase === "build" && p.team && connectionStatus && connectionStatus[p.team] === false;
+          const statusText = ready[p.id] ? "Ready" : needsConnection ? "Needs connection" : "Waiting";
+          return (
+            <div key={p.id} className="ready-row">
+              <span>{TEAM_META[p.team]?.emoji} {p.name}</span>
+              <Pill tone={ready[p.id] ? "ready" : "waiting"}>{statusText}</Pill>
+            </div>
+          );
+        })}
       </div>
       {isHost && (
         <Button onClick={onAdvance} disabled={!canAdvance} variant="primary" className="full-width">
@@ -2803,14 +3724,27 @@ function PhaseReadyTopBar({ lobby, player, phase, onToggleReady, isHost, onAdvan
 }
 
 
-function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, selectedUnitId, selectedResource, visualToggles = {} }) {
+function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, selectedUnitId, selectedResource, visualToggles = {}, onGroundItemsContextMenu, onBoardContextMenu }) {
   const game = lobby.game;
   const setup = game.setup;
   const size = sizeOf(setup);
   const units = arrayFromObject(game.units);
   const splats = arrayFromObject(game.splats);
   const effects = arrayFromObject(game.effects);
+  const groundItems = groundItemsArray(game);
+  const respawns = arrayFromObject(game.respawnQueue);
   const unitsByCell = useMemo(() => {
+    const map = new Map();
+    for (const unit of units) {
+      for (const cell of unitFootprint(unit)) {
+        const k = key(cell.row, cell.col);
+        if (!map.has(k)) map.set(k, []);
+        map.get(k).push(unit);
+      }
+    }
+    return map;
+  }, [game.units]);
+  const unitAnchorsByCell = useMemo(() => {
     const map = new Map();
     for (const unit of units) {
       const k = key(unit.row, unit.col);
@@ -2832,6 +3766,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     const map = new Map();
     for (const effect of effects) {
       for (const point of [{ row: effect.fromRow, col: effect.fromCol }, { row: effect.row, col: effect.col }]) {
+        if (!Number.isFinite(Number(point.row)) || !Number.isFinite(Number(point.col))) continue;
         const k = key(point.row, point.col);
         if (!map.has(k)) map.set(k, []);
         map.get(k).push(effect);
@@ -2840,36 +3775,131 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     return map;
   }, [game.effects]);
 
+  const groundItemsByCell = useMemo(() => {
+    const map = new Map();
+    for (const item of groundItems) {
+      const k = key(item.row, item.col);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(item);
+    }
+    return map;
+  }, [game.groundItems]);
+
+  const spawnIndicatorsByCell = useMemo(() => {
+    const map = new Map();
+    const add = (row, col, indicator) => {
+      const k = key(row, col);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(indicator);
+    };
+    for (const effect of effects.filter((e) => e.type === "spawn" && e.team === "npc")) add(effect.row, effect.col, { ...effect, kind: "effect" });
+    if (setup.npcSpawns) {
+      const fightTime = Number(game.fightTime || 0);
+      const nextByStyle = game.nextNpcSpawnAtByStyle || {};
+      const previewUnits = units.map((unit) => ({ ...unit }));
+      for (const cfg of npcSpawnConfigs(setup)) {
+        const nextNpcSpawnAt = Number(nextByStyle[cfg.style] ?? (cfg.style === "goblin" ? game.nextNpcSpawnAt : undefined) ?? cfg.interval ?? NPC_SPAWN_INTERVAL);
+        const secondsUntilNpcSpawn = nextNpcSpawnAt - fightTime;
+        if (!(secondsUntilNpcSpawn > 0 && secondsUntilNpcSpawn <= SPAWN_WARNING_SECONDS)) continue;
+        const alive = previewUnits.filter((u) => u.team === "npc" && u.style === cfg.style && u.hp > 0).length;
+        const toPreview = Math.max(0, cfg.amount - alive);
+        const planned = plannedNpcSpawnCells(setup, previewUnits, cfg.style, toPreview, game.board);
+        planned.forEach((cell, i) => {
+          add(cell.row, cell.col, { id: `npc-pending-${cfg.style}-${Math.round(nextNpcSpawnAt)}-${i}`, kind: "pending", team: "npc", style: cfg.style, timer: secondsUntilNpcSpawn });
+          previewUnits.push({ id: `pending_${cfg.style}_${i}`, team: "npc", style: cfg.style, row: cell.row, col: cell.col, hp: 1 });
+        });
+      }
+    }
+    return map;
+  }, [game.effects, game.nextNpcSpawnAt, game.nextNpcSpawnAtByStyle, game.fightTime, game.units, game.board, setup]);
+
   const activeTeam = player?.team;
   const showHitsplats = visualToggles.showHitsplats !== false;
   const showUnitNames = visualToggles.showUnitNames !== false;
   const [hoverUnit, setHoverUnit] = useState(null);
+  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const panRef = useRef(null);
   const selectedUnit = selectedUnitId ? units.find((u) => u.id === selectedUnitId && u.hp > 0) : null;
   const previewUnit = hoverUnit || selectedUnit;
   const selectedTarget = useMemo(() => selectedUnit ? selectedTargetPreview(game, selectedUnit, activeTeam) : null, [game, selectedUnit, activeTeam]);
-  const projectileEffects = effects.filter((e) => combatType(e.style) === "range" || combatType(e.style) === "magic");
+  const projectileEffects = effects.filter((e) => e.type !== "spawn" && (combatType(e.style) === "range" || combatType(e.style) === "magic"));
   const reachableBuildKeys = useMemo(() => activeTeam && lobby.phase === "build" ? reachableRoadKeys(game.board, activeTeam, setup) : new Set(), [game.board, activeTeam, lobby.phase, setup]);
+  useEffect(() => { setView({ zoom: 1, x: 0, y: 0 }); }, [size]);
+  const setZoom = (nextZoom, anchor = null) => {
+    setView((cur) => {
+      const zoom = Math.max(0.55, Math.min(2.5, nextZoom));
+      if (!anchor) return { ...cur, zoom };
+      const ratio = zoom / cur.zoom;
+      return { zoom, x: anchor.x - (anchor.x - cur.x) * ratio, y: anchor.y - (anchor.y - cur.y) * ratio };
+    });
+  };
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!panRef.current) return;
+      const start = panRef.current;
+      setView((cur) => ({ ...cur, x: start.x + (e.clientX - start.clientX), y: start.y + (e.clientY - start.clientY) }));
+    };
+    const onUp = () => { panRef.current = null; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   return (
-    <div className="board-wrap">
-      <div className="board" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
+    <div
+      className={`board-wrap ${panRef.current ? "is-panning" : ""}`}
+      onWheel={(e) => {
+        e.preventDefault();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        setZoom(view.zoom * (e.deltaY > 0 ? 0.9 : 1.1), anchor);
+      }}
+      onMouseDown={(e) => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        panRef.current = { clientX: e.clientX, clientY: e.clientY, x: view.x, y: view.y };
+      }}
+      onAuxClick={(e) => { if (e.button === 1) e.preventDefault(); }}
+    >
+      <div className="board-view-controls">
+        <span>{size}x{size}</span>
+        <span>{Math.round(view.zoom * 100)}%</span>
+        <button type="button" onClick={() => setZoom(view.zoom * 1.12)}>+</button>
+        <button type="button" onClick={() => setZoom(view.zoom * 0.88)}>-</button>
+        <button type="button" onClick={() => setView({ zoom: 1, x: 0, y: 0 })}>Reset</button>
+        <small>Scroll zoom • middle-drag pan</small>
+      </div>
+      <div className="board-pan-scene" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
+        <div className="board" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
         {game.board.flat().map((cell) => {
           const baseTeam = baseTeamAt(cell.row, cell.col, setup);
           const rawCellUnits = unitsByCell.get(key(cell.row, cell.col)) || [];
           const cellUnits = [...rawCellUnits].sort((a, b) => Number(b.id === selectedUnitId) - Number(a.id === selectedUnitId) || Number(Boolean(b.carryingFlagTeam)) - Number(Boolean(a.carryingFlagTeam)) || a.team.localeCompare(b.team));
+          const rawAnchorUnits = unitAnchorsByCell.get(key(cell.row, cell.col)) || [];
+          const anchorUnits = [...rawAnchorUnits].sort((a, b) => Number(b.id === selectedUnitId) - Number(a.id === selectedUnitId) || Number(Boolean(b.carryingFlagTeam)) - Number(Boolean(a.carryingFlagTeam)) || a.team.localeCompare(b.team));
           const cellSplats = splatsByCell.get(key(cell.row, cell.col)) || [];
           const cellEffects = effectsByCell.get(key(cell.row, cell.col)) || [];
-          const fogged = isBuildFogged(cell, activeTeam, lobby.phase, setup);
-          const visibleType = fogged ? "empty" : cell.type;
-          const hiddenUnused = lobby.phase !== "build" && visibleType === "empty" && !baseTeam && cellUnits.length === 0;
-          const firstUnit = cellUnits[0];
-          const style = fogged ? FOG_STYLE : TILE_STYLE[visibleType] || TILE_STYLE.empty;
+          const cellGroundItems = groundItemsByCell.get(key(cell.row, cell.col)) || [];
+          const spawnIndicators = spawnIndicatorsByCell.get(key(cell.row, cell.col)) || [];
+          const buildLimited = lobby.phase === "build";
+          const buildVisible = !buildLimited || !activeTeam || cell.owner === activeTeam || isCenterCell(cell.row, cell.col, size);
+          const buildHidden = buildLimited && !buildVisible;
+          const fogged = !buildHidden && isBuildFogged(cell, activeTeam, lobby.phase, setup);
+          const visibleType = buildHidden || fogged ? "empty" : cell.type;
+          const hiddenUnused = buildHidden || (lobby.phase !== "build" && visibleType === "empty" && !baseTeam && cellUnits.length === 0);
+          const firstUnit = buildHidden ? null : anchorUnits[0];
+          const targetUnit = buildHidden ? null : cellUnits[0];
+          const style = buildHidden ? {} : (fogged ? FOG_STYLE : TILE_STYLE[visibleType] || TILE_STYLE.empty);
           const inHoverRange = previewUnit && !fogged && !blocksLineOfSight(cell) && canAttack(game.board, previewUnit, cell, STYLE[previewUnit.style]?.range ?? 1, setup);
           const inBuildPath = !fogged && reachableBuildKeys.has(key(cell.row, cell.col)) && lobby.phase === "build" && walkable(cell, setup) && (cell.owner === activeTeam || cell.owner === "neutral");
           const selectedHere = selectedUnitId && cellUnits.some((u) => u.id === selectedUnitId);
           const targetHere = selectedTarget && selectedTarget.row === cell.row && selectedTarget.col === cell.col && !fogged;
           const resourceSelectedHere = selectedResource && selectedResource.row === cell.row && selectedResource.col === cell.col && !fogged;
-          const title = firstUnit ? unitHoverText(firstUnit) : fogged ? "Hidden enemy tile" : `${cell.row},${cell.col} owner:${cell.owner} type:${cell.type}${selectedTarget && targetHere ? ` • ${selectedTarget.label}` : ""}${cell.regrowType ? ` regrows ${cell.regrowType} in ${Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s` : ""}`;
+          const groundItemTitle = cellGroundItems.length ? ` • Ground: ${cellGroundItems.map((entry) => `${itemLabel(entry)} (${groundItemRemainingSeconds(entry, game.fightTime || 0)}s)`).join(", ")}` : "";
+          const title = targetUnit ? `${unitHoverText(targetUnit)}${groundItemTitle}` : fogged ? "Hidden enemy tile" : `${cell.row},${cell.col} owner:${cell.owner} type:${cell.type}${selectedTarget && targetHere ? ` • ${selectedTarget.label}` : ""}${cell.regrowType ? ` regrows ${cell.regrowType} in ${Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s` : ""}${groundItemTitle}`;
           const resourceType = !fogged && (cell.type === "tree" || cell.type === "rock") ? cell.type : null;
           const resourceMax = resourceType ? resourceMaxHp(resourceType) : 0;
           const resourceHp = resourceType ? resourceCurrentHp(cell, resourceType) : 0;
@@ -2877,10 +3907,24 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           return (
             <button
               key={key(cell.row, cell.col)}
-              onClick={() => firstUnit && onUnitClick ? onUnitClick(firstUnit.id) : onCellClick(cell.row, cell.col)}
-              onMouseEnter={() => setHoverUnit(firstUnit || null)}
+              onClick={() => { if (buildHidden) return; targetUnit && onUnitClick ? onUnitClick(targetUnit.id) : onCellClick(cell.row, cell.col); }}
+              onMouseEnter={() => setHoverUnit(targetUnit || null)}
               onMouseLeave={() => setHoverUnit(null)}
-              className={`cell ${hiddenUnused ? "hidden-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
+              onContextMenu={(e) => {
+                if (buildHidden) return;
+                if (onBoardContextMenu) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onBoardContextMenu(e, cell, cellUnits, cellGroundItems);
+                  return;
+                }
+                if (cellGroundItems.length && onGroundItemsContextMenu) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onGroundItemsContextMenu(e, cellGroundItems, cell);
+                }
+              }}
+              className={`cell ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
               style={style}
               title={title}
             >
@@ -2898,12 +3942,19 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                     </div>
                   ))}
                   <div className="cell-content">
+                    {spawnIndicators.slice(-2).map((indicator) => <img key={indicator.id} className={`spawn-pentagram spawn-${indicator.kind}`} src={asset("pentagram.png")} alt="Spawn marker" draggable={false} />)}
                     {baseTeam ? <BaseIcon team={baseTeam} /> : cell.owner === "void" && visibleType === "empty" ? "×" : fogged ? "?" : visibleType === "empty" ? "·" : TILE[visibleType]?.image ? <img className="tile-object-icon" src={asset(TILE[visibleType].image)} alt={TILE[visibleType].name} /> : visibleType === "wall" ? TILE[visibleType].icon : ""}
+                    {!fogged && cellGroundItems.length > 0 && (
+                      <div className="ground-item-stack" title={cellGroundItems.map((entry) => `${itemLabel(entry)} • ${groundItemRemainingSeconds(entry, game.fightTime || 0)}s`).join("\n")}>
+                        {cellGroundItems.slice(0, 3).map((entry) => <GearIcon key={entry.id} item={entry} slot={itemById(entry)?.slot} size="xs" />)}
+                        {cellGroundItems.length > 3 && <span>+{cellGroundItems.length - 3}</span>}
+                      </div>
+                    )}
                     {targetHere && <div className="target-marker">🎯</div>}
                     {showResourceHp && <div className="resource-hpbar"><div className="resource-hpbar-fill" style={{ width: `${Math.max(0, Math.min(100, (resourceHp / resourceMax) * 100))}%` }} /></div>}
                     {cell.regrowType && !fogged && <div className="regrow-timer">{Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s</div>}
                     {firstUnit && <UnitToken unit={{ ...firstUnit, currentFightTime: game.fightTime || 0 }} bump={cellEffects.length > 0} showName={showUnitNames} />}
-                    {cellUnits.length > 1 && <div className="stack-count">+{cellUnits.length - 1}</div>}
+                    {anchorUnits.length > 1 && <div className="stack-count">+{anchorUnits.length - 1}</div>}
                   </div>
                 </>
               )}
@@ -2936,6 +3987,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           );
         })}
       </svg>
+      </div>
     </div>
   );
 }
@@ -2948,9 +4000,15 @@ function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isH
 
   return (
     <aside className="side-panel">
+      <ReadyPanel lobby={lobby} playerId={player.id} phase="build" onToggleReady={onReady} isHost={isHost} onAdvance={onAdvance} advanceText="To Buy" canAdvance={canAdvance} connectionStatus={connections} blockReadyReason={player?.team && !connections[player.team] ? "Needs connection to the center before finalizing Build Phase." : ""} />
       <section className="card compact">
         <h3>Build Controls</h3>
-        <p className="muted">You can build only inside your own quadrant. Keep {BUILD_PHASE_GOLD_RESERVE}g for buy phase.</p>
+        <p className="muted">You can build only inside your own zone. Keep {BUILD_PHASE_GOLD_RESERVE}g for buy phase.</p>
+        {player?.team && (
+          <div className={`connection-banner ${connections[player.team] ? "connected" : "missing"}`}>
+            <span>{connections[player.team] ? "✓ Connected to center" : "Needs path to center"}</span>
+          </div>
+        )}
         <div className="tool-grid">
           {Object.keys(TILE).map((type) => (
             <Button key={type} onClick={() => setSelectedTool({ kind: "terrain", type })} variant={selectedTool.type === type ? "primary" : "default"}>
@@ -2966,7 +4024,7 @@ function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isH
         <h3>Teams</h3>
         {teams.map((team) => (
           <div key={team} className="team-status">
-            <span>{TEAM_META[team].emoji} {TEAM_META[team].name}</span>
+            <span>{teamDisplayLabel(lobby, team)}</span>
             <span>{game.gold?.[team] ?? 0}g</span>
             <Pill tone={connections[team] ? "ready" : "waiting"}>{connections[team] ? "center ready" : "needs path"}</Pill>
           </div>
@@ -2977,7 +4035,7 @@ function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isH
         <h3>Targets</h3>
         {teams.map((team) => (
           <div key={team} className="target-row">
-            <span>{TEAM_META[team].emoji} {TEAM_META[team].name}</span>
+            <span>{teamDisplayLabel(lobby, team)}</span>
             <TargetControl team={team} lobby={lobby} player={player} onChange={onSetOrder} />
           </div>
         ))}
@@ -2986,7 +4044,7 @@ function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isH
   );
 }
 
-function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, onEquipItem, onUnequipItem, onUpdateUnit, onRemoveUnit }) {
+function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, onEquipItem, onUnequipItem, onUpdateUnit, onRemoveUnit, onReady, isHost, onAdvance }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const allUnits = arrayFromObject(game.units);
@@ -3070,15 +4128,32 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
             }}
           >
             <div className="market-drop-hint">Drop loot here to sell it for 50% value. Sold items appear here for any player to buy.</div>
-            {marketItemsArray(game).length === 0 && SHOP_GEAR_ITEM_IDS.length === 0 && <p className="muted empty-shop-note">No gear is stocked yet. Future loot sold by players will appear here.</p>}
-            {marketItemsArray(game).map((entry) => {
-              const item = itemById(entry);
+            {groupedMarketItemsArray(game).length === 0 && SHOP_GEAR_ITEM_IDS.length === 0 && <p className="muted empty-shop-note">No gear is stocked yet. Future loot sold by players will appear here.</p>}
+            {SHOP_GEAR_ITEM_IDS.map((itemId) => {
+              const item = itemById(itemId);
               return (
-                <button className="gear-card" key={entry.key} onClick={() => onBuyMarketItem?.(entry.key)}>
-                  <GearIcon item={entry} slot={item.slot} size="lg" />
+                <button className="gear-card" key={`shop-${itemId}`} onClick={() => onBuyMarketItem?.({ itemId, price: item.cost, shop: true })}>
+                  <GearIcon item={{ itemId }} slot={item.slot} size="lg" />
                   <div>
                     <b>{item.name}</b>
-                    <span>{entry.price ?? item.cost}g • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot}{item.twoHanded ? " • 2H" : ""}</span>
+                    <span>{item.cost}g • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot} • unlimited stock</span>
+                    <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
+                  </div>
+                </button>
+              );
+            })}
+            {groupedMarketItemsArray(game).map((entry) => {
+              const item = itemById(entry);
+              const firstKey = entry.keys?.[0] || entry.key;
+              return (
+                <button className="gear-card stacked-gear-card" key={`${item.id}-${entry.price}`} onClick={() => onBuyMarketItem?.(firstKey)}>
+                  <div className="gear-stack-icon-wrap">
+                    <GearIcon item={entry} slot={item.slot} size="lg" />
+                    <span className="gear-stock-badge">x{entry.stock}</span>
+                  </div>
+                  <div>
+                    <b>{item.name}</b>
+                    <span>{entry.price ?? item.cost}g • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot}{item.twoHanded ? " • 2H" : ""} • stock {entry.stock}</span>
                     <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
                   </div>
                 </button>
@@ -3087,6 +4162,8 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
           </div>
         )}
       </section>
+
+      <ReadyPanel lobby={lobby} playerId={player.id} phase="buy" onToggleReady={onReady} isHost={isHost} onAdvance={onAdvance} advanceText="Start Fight" canAdvance={canAdvance} blockReadyReason={overLimit ? "You are over the unit cap. Sell units until your roster is within the limit before readying." : ""} />
 
       <section className="card compact loot-card">
         <h3>Current Loot</h3>
@@ -3103,10 +4180,11 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
                   if (!item) return;
                   e.dataTransfer.setData("text/qb-inventory-index", String(index));
                   e.dataTransfer.effectAllowed = "move";
+                  setInventoryDragPreview(e, entry);
                 }}
                 title={item ? gearBonusSummary(entry) : "Empty loot slot"}
               >
-                {item ? <><GearIcon item={entry} slot={item.slot} /><small>{item.name}</small><div className="inventory-tooltip"><b>{item.name}</b><span>{gearBonusSummary(entry)}</span></div></> : <span className="empty-slot-label">{index + 1}</span>}
+                {item ? <><GearIcon item={entry} slot={item.slot} /><small>{item.name}</small>{itemQuantity(entry) > 1 && <span className="inventory-qty-badge">x{itemQuantity(entry)}</span>}<div className="inventory-tooltip"><b>{item.name}{itemQuantity(entry) > 1 ? ` x${itemQuantity(entry)}` : ""}</b><span>{gearBonusSummary(entry)}</span></div></> : <span className="empty-slot-label">{index + 1}</span>}
               </div>
             );
           })}
@@ -3118,13 +4196,14 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
         <div className="owned-units">
           {myUnits.length === 0 && <p className="muted">No units yet.</p>}
           {myUnits.map((u) => (
-            <div className="owned-unit buy-owned-unit" key={u.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const fromIndex = Number(e.dataTransfer.getData("text/qb-inventory-index")); if (Number.isFinite(fromIndex)) onEquipItem?.(fromIndex, u.id); }}>
-              <div className="owned-header">
+            <details className="owned-unit buy-owned-unit collapsible-unit-card" key={u.id} open={myUnits.length <= 3} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const fromIndex = Number(e.dataTransfer.getData("text/qb-inventory-index")); if (Number.isFinite(fromIndex)) onEquipItem?.(fromIndex, u.id); }}>
+              <summary className="owned-header collapsible-unit-summary">
                 <StyleIcon styleId={u.style} />
                 <b>{STYLE[u.style].name}</b>
                 <span>{u.name}</span>
-                <button type="button" className="sell-unit-btn" onClick={() => onRemoveUnit?.(u.id)}>Sell +{STYLE[u.style]?.cost ?? 0}g</button>
-              </div>
+                <Pill>Max {maxDamageRoll(u, null)}</Pill>
+                <button type="button" className="sell-unit-btn" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemoveUnit?.(u.id); }}>Sell +{STYLE[u.style]?.cost ?? 0}g</button>
+              </summary>
               <input value={u.name} onChange={(e) => onUpdateUnit(u.id, { name: e.target.value })} />
               <div className="unit-buy-gear-layout">
                 <UnitEquipmentGrid unit={u} onEquipItem={onEquipItem} onUnequipItem={onUnequipItem} />
@@ -3133,7 +4212,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
                   <GearStatsPanel unit={u} />
                 </div>
               </div>
-            </div>
+            </details>
           ))}
         </div>
       </section>
@@ -3155,6 +4234,7 @@ function FightStats({ lobby, player }) {
     deaths: (a, b) => (b.deathCount ?? 0) - (a.deathCount ?? 0),
     flags: (a, b) => ((b.flagCaptures ?? 0) * 3 + (b.flagGrabs ?? 0)) - ((a.flagCaptures ?? 0) * 3 + (a.flagGrabs ?? 0)),
     loot: (a, b) => (b.lootGold ?? 0) - (a.lootGold ?? 0),
+    hill: (a, b) => ((b.hillUncontestedTime ?? 0) + (b.hillContestedTime ?? 0)) - ((a.hillUncontestedTime ?? 0) + (a.hillContestedTime ?? 0)),
     resources: (a, b) => (b.resourcesCleared ?? 0) - (a.resourcesCleared ?? 0),
   };
   const allUnits = [...units, ...respawns]
@@ -3170,6 +4250,7 @@ function FightStats({ lobby, player }) {
             <option value="kills">Kills</option>
             <option value="flags">Flag work</option>
             <option value="loot">Loot gold</option>
+            <option value="hill">Hill time</option>
             <option value="resources">Resources</option>
             <option value="hp">Current HP</option>
             <option value="deaths">Deaths</option>
@@ -3178,7 +4259,7 @@ function FightStats({ lobby, player }) {
         <label>Team
           <select value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
             <option value="all">All teams</option>
-            {teams.map((team) => <option key={team} value={team}>{TEAM_META[team].name}</option>)}
+            {teams.map((team) => <option key={team} value={team}>{teamDisplayName(lobby, team)}</option>)}
           </select>
         </label>
       </div>
@@ -3187,10 +4268,11 @@ function FightStats({ lobby, player }) {
           const teamUnits = [...units, ...respawns].filter((u) => u.team === team);
           return (
             <div className="stats-card" key={team} style={{ borderColor: TEAM_META[team].color }}>
-              <h3>{TEAM_META[team].emoji} {TEAM_META[team].name}</h3>
+              <h3>{teamDisplayLabel(lobby, team)}</h3>
               <p>Base HP {Math.max(0, Math.round(game.bases?.[team]?.hp ?? 0))}/{game.setup.baseHp}</p>
               <p>Alive {units.filter((u) => u.team === team).length} • Respawn {respawns.filter((u) => u.team === team).length}</p>
               <p>Damage {teamUnits.reduce((s, u) => s + (u.totalDamage ?? 0), 0)} • Kills {teamUnits.reduce((s, u) => s + (u.kills ?? 0), 0)} • Loot {teamUnits.reduce((s, u) => s + (u.lootGold ?? 0), 0)}g</p>
+              {(game.setup.gameMode === "king_hill") && <p>Hill {Math.floor(teamUnits.reduce((s, u) => s + (u.hillUncontestedTime ?? 0), 0))}s uncontested • {Math.floor(teamUnits.reduce((s, u) => s + (u.hillContestedTime ?? 0), 0))}s contested</p>}
             </div>
           );
         })}
@@ -3206,6 +4288,7 @@ function FightStats({ lobby, player }) {
             <span>{u.totalDamage ?? 0} dmg</span>
             <span>{u.kills ?? 0} kills</span>
             <span>{u.flagGrabs ?? 0}/{u.flagCaptures ?? 0} flags</span>
+            {(game.setup.gameMode === "king_hill") && <span>{Math.floor(u.hillUncontestedTime ?? 0)}s hill / {Math.floor(u.hillContestedTime ?? 0)}s cont.</span>}
             <span>{u.lootGold ?? 0}g</span>
             <span>{u.deathCount ?? 0} deaths</span>
           </div>
@@ -3221,7 +4304,7 @@ function ResourceInfoCard({ game, selectedResource, onClose }) {
   const resourceType = cell?.type === "tree" || cell?.type === "rock" ? cell.type : cell?.regrowType;
   if (!cell || !resourceType) {
     return (
-      <div className="unit-info-card">
+      <div className="unit-info-card resource-info-card">
         <div className="unit-info-header">
           <span className="resource-info-icon">?</span>
           <div>
@@ -3266,7 +4349,7 @@ function ResourceInfoCard({ game, selectedResource, onClose }) {
   );
 }
 
-function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, selectedResource, setSelectedResource, onUpdateUnit, pendingManualTargetUnitId, onBeginManualTarget }) {
+function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, selectedResource, setSelectedResource, onUpdateUnit, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const units = arrayFromObject(game.units);
@@ -3279,7 +4362,7 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
       <section className="card compact">
         <h3>Selected Info</h3>
         {selectedUnit ? (
-          <UnitInfoCard lobby={lobby} unit={selectedUnit} player={player} onUpdateUnit={onUpdateUnit} onClose={() => setSelectedUnitId(null)} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={onBeginManualTarget} />
+          <UnitInfoCard lobby={lobby} unit={selectedUnit} player={player} onUpdateUnit={onUpdateUnit} onClose={() => setSelectedUnitId(null)} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={onBeginManualTarget} onEquipItem={onEquipItem} />
         ) : selectedResource ? (
           <ResourceInfoCard game={game} selectedResource={selectedResource} onClose={() => setSelectedResource(null)} />
         ) : (
@@ -3294,7 +4377,7 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
             const carrier = carriers.find((u) => u.carryingFlagTeam === team);
             return (
               <div key={team} className="team-status">
-                <span>{TEAM_META[team].emoji} {TEAM_META[team].name}</span>
+                <span>{teamDisplayLabel(lobby, team)}</span>
                 <span>{carrier ? `${TEAM_META[carrier.team]?.name} ${carrier.name}` : "Home"}</span>
               </div>
             );
@@ -3302,6 +4385,19 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
           <div className="score-list">
             {teams.map((team) => <div key={`score-${team}`} className="team-status"><span>{TEAM_META[team].emoji} Score</span><Pill>{game.ctfScores?.[team] ?? 0}/{game.setup.ctfScoreLimit ?? 3}</Pill></div>)}
           </div>
+        </section>
+      )}
+
+      {(game.setup.gameMode === "king_hill") && (
+        <section className="card compact">
+          <h3>King of the Hill</h3>
+          <p className="muted">Purple center tiles score only when uncontested.</p>
+          {teams.map((team) => (
+            <div key={`hill-${team}`} className="team-status">
+              <span>{teamDisplayLabel(lobby, team)}</span>
+              <Pill tone={game.kothController === team ? "ready" : "default"}>{Math.floor(game.kothScores?.[team] ?? 0)}/{game.setup.kothTimeLimit ?? 60}s</Pill>
+            </div>
+          ))}
         </section>
       )}
 
@@ -3317,7 +4413,7 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
         <h3>Respawns</h3>
         {teams.map((team) => (
           <div key={`respawn-${team}`} className="team-status">
-            <span>{TEAM_META[team].emoji} {TEAM_META[team].name}</span>
+            <span>{teamDisplayLabel(lobby, team)}</span>
             <Pill>{respawns.filter((u) => u.team === team).length} queued</Pill>
           </div>
         ))}
@@ -3326,14 +4422,23 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
   );
 }
 
-function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManualTargetUnitId, onBeginManualTarget }) {
+function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem }) {
   const game = lobby.game;
   const canEdit = unit.team === player?.team;
   const style = STYLE[unit.style];
   const hpPct = Math.max(0, Math.min(100, (unit.hp / Math.max(1, maxHp(unit))) * 100));
   const accuracy = Math.round(100 * (unit.hitsLanded ?? 0) / Math.max(1, unit.attacksAttempted ?? 0));
   return (
-    <div className="unit-info-card">
+    <div
+      className={`unit-info-card ${canEdit ? "unit-info-dropzone" : ""}`}
+      onDragOver={(e) => { if (canEdit && (unit.hp ?? 0) > 0 && unit.timer == null) e.preventDefault(); }}
+      onDrop={(e) => {
+        if (!canEdit || (unit.hp ?? 0) <= 0 || unit.timer != null) return;
+        e.preventDefault();
+        const fromIndex = Number(e.dataTransfer.getData("text/qb-inventory-index"));
+        if (Number.isFinite(fromIndex)) onEquipItem?.(fromIndex, unit.id);
+      }}
+    >
       <div className="unit-info-header">
         <StyleIcon styleId={unit.style} size="lg" />
         <div>
@@ -3383,6 +4488,7 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
                   manualTargetRow: null,
                   manualTargetCol: null,
                   manualResourceType: null,
+                  manualGroundItemId: null,
                   manualTargetStartedAt: null,
                   manualTargetBlockedSince: null,
                   homeTeleportStartedAt: null,
@@ -3394,6 +4500,7 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
                   homeTeleportPreviousManualTargetRow: null,
                   homeTeleportPreviousManualTargetCol: null,
                   homeTeleportPreviousManualResourceType: null,
+                  homeTeleportPreviousManualGroundItemId: null,
                 };
                 if (targetOverride === "homeTeleport") {
                   onUpdateUnit(unit.id, {
@@ -3407,6 +4514,7 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
                     homeTeleportPreviousManualTargetRow: unit.manualTargetRow ?? null,
                     homeTeleportPreviousManualTargetCol: unit.manualTargetCol ?? null,
                     homeTeleportPreviousManualResourceType: unit.manualResourceType ?? null,
+                    homeTeleportPreviousManualGroundItemId: unit.manualGroundItemId ?? null,
                   });
                 } else {
                   onUpdateUnit(unit.id, basePatch);
@@ -3435,12 +4543,12 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
       <p className="muted">Current target: {canEdit ? targetLabel(unit.targetOverride, unit, game) : "Hidden"}</p>
       {canEdit && unit.targetOverride === "homeTeleport" && <p className="teleport-note">Home teleport channels for {HOME_TELEPORT_SECONDS}s. Any incoming attack interrupts it.</p>}
       {canEdit && pendingManualTargetUnitId === unit.id && <p className="manual-target-note">Click an enemy unit to attack, a road/base tile to move, or any matching resource to chop/mine. If blocked for {MANUAL_TARGET_TIMEOUT}s it returns to team/random targeting.</p>}
-      {canEdit && unit.targetOverride === "manual" && unit.manualTargetType && <button className="clear-manual-btn" onClick={() => onUpdateUnit(unit.id, { targetOverride: "inherit", manualTargetType: null, manualTargetUnitId: null, manualTargetRow: null, manualTargetCol: null, manualResourceType: null, manualTargetStartedAt: null, manualTargetBlockedSince: null, homeTeleportStartedAt: null, homeTeleportHpAtStart: null, homeTeleportLastAttackedAtStart: null, homeTeleportPreviousTargetOverride: null, homeTeleportPreviousManualTargetType: null, homeTeleportPreviousManualTargetUnitId: null, homeTeleportPreviousManualTargetRow: null, homeTeleportPreviousManualTargetCol: null, homeTeleportPreviousManualResourceType: null })}>Clear manual target</button>}
+      {canEdit && unit.targetOverride === "manual" && unit.manualTargetType && <button className="clear-manual-btn" onClick={() => onUpdateUnit(unit.id, { targetOverride: "inherit", manualTargetType: null, manualTargetUnitId: null, manualTargetRow: null, manualTargetCol: null, manualResourceType: null, manualGroundItemId: null, manualTargetStartedAt: null, manualTargetBlockedSince: null, homeTeleportStartedAt: null, homeTeleportHpAtStart: null, homeTeleportLastAttackedAtStart: null, homeTeleportPreviousTargetOverride: null, homeTeleportPreviousManualTargetType: null, homeTeleportPreviousManualTargetUnitId: null, homeTeleportPreviousManualTargetRow: null, homeTeleportPreviousManualTargetCol: null, homeTeleportPreviousManualResourceType: null, homeTeleportPreviousManualGroundItemId: null })}>Clear manual target</button>}
     </div>
   );
 }
 
-function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, selectedUnitId, onSelectUnit, onEquipItem }) {
+function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, selectedUnitId, onSelectUnit, onEquipItem, onInventoryContextMenu }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const units = arrayFromObject(game.units);
@@ -3463,12 +4571,11 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
 
       {myTeam && (
         <section className="card compact">
-          <h3>Your Target</h3>
+          <h3>Team Target</h3>
           <div className="target-row own-target-row">
-            <span>{TEAM_META[myTeam].emoji} {TEAM_META[myTeam].name}</span>
+            <span>{teamDisplayLabel(lobby, myTeam)}</span>
             <TargetControl team={myTeam} lobby={lobby} player={player} onChange={onSetOrder} />
           </div>
-          <p className="muted">Other teams' targets are hidden.</p>
         </section>
       )}
 
@@ -3476,8 +4583,9 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
         <h3>Teams</h3>
         {teams.map((team) => (
           <div key={team} className="team-status">
-            <span>{TEAM_META[team].emoji} {TEAM_META[team].name}</span>
+            <span>{teamDisplayLabel(lobby, team)}</span>
             <span>Base {Math.max(0, Math.round(game.bases?.[team]?.hp ?? 0))}</span>
+            {(game.setup.gameMode === "king_hill") && <Pill tone={game.kothController === team ? "ready" : "default"}>Hill {Math.floor(game.kothScores?.[team] ?? 0)}/{game.setup.kothTimeLimit ?? 60}s</Pill>}
             <Pill>{units.filter((u) => u.team === team).length} alive</Pill>
           </div>
         ))}
@@ -3492,6 +4600,7 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
               <button className={rightTab === "loot" ? "active" : ""} onClick={() => setRightTab("loot")}>Loot</button>
             </div>
           </div>
+          <div className="team-status fight-gold-row"><span>Current gold</span><Pill>{game.gold?.[myTeam] ?? 0}g</Pill></div>
           {rightTab === "units" ? (
             <>
               <p className="muted">Alive {myUnits.length} • Respawn {myRespawns.length}</p>
@@ -3522,7 +4631,7 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
             </>
           ) : (
             <div className="fight-loot-panel">
-              <p className="muted">Drag loot onto one of your active units to quick equip it.</p>
+              <p className="muted">Drag loot onto selected unit info or a unit card to equip/use it. Right-click loot to drop it under your selected unit.</p>
               <div className="inventory-grid small-inventory-grid">
                 {inventory.map((entry, index) => {
                   const item = itemById(entry);
@@ -3531,10 +4640,11 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
                       key={`fight-loot-${index}`}
                       className={`inventory-slot ${item ? "has-item" : ""}`}
                       draggable={Boolean(item)}
-                      onDragStart={(e) => { if (!item) return; e.dataTransfer.setData("text/qb-inventory-index", String(index)); e.dataTransfer.effectAllowed = "move"; }}
-                      title={item ? gearBonusSummary(entry) : "Empty loot slot"}
+                      onDragStart={(e) => { if (!item) return; e.dataTransfer.setData("text/qb-inventory-index", String(index)); e.dataTransfer.effectAllowed = "move"; setInventoryDragPreview(e, entry); }}
+                      onContextMenu={(e) => { if (!item) return; onInventoryContextMenu?.(e, index, entry); }}
+                      title={item ? `${gearBonusSummary(entry)} • Right-click to drop under selected unit.` : "Empty loot slot"}
                     >
-                      {item ? <><GearIcon item={entry} slot={item.slot} /><small>{item.name}</small><div className="inventory-tooltip"><b>{item.name}</b><span>{gearBonusSummary(entry)}</span></div></> : <span className="empty-slot-label">{index + 1}</span>}
+                      {item ? <><GearIcon item={entry} slot={item.slot} /><small>{item.name}</small>{itemQuantity(entry) > 1 && <span className="inventory-qty-badge">x{itemQuantity(entry)}</span>}<div className="inventory-tooltip"><b>{item.name}{itemQuantity(entry) > 1 ? ` x${itemQuantity(entry)}` : ""}</b><span>{gearBonusSummary(entry)}</span></div></> : <span className="empty-slot-label">{index + 1}</span>}
                     </div>
                   );
                 })}
@@ -3556,24 +4666,24 @@ function copyShareCode(lobby, results) {
     bases: results.bases,
     ctfScores: results.ctfScores,
     gold: results.gold,
-    teams: Object.fromEntries(Object.entries(results.teamStats || {}).map(([team, stats]) => [team, { damage: stats.damage, kills: stats.kills, deaths: stats.deaths, baseDamage: stats.baseDamage, unitDamage: stats.unitDamage, flagGrabs: stats.flagGrabs, flagCaptures: stats.flagCaptures, lootGold: stats.lootGold }]))
+    teams: Object.fromEntries(Object.entries(results.teamStats || {}).map(([team, stats]) => [team, { damage: stats.damage, kills: stats.kills, deaths: stats.deaths, baseDamage: stats.baseDamage, unitDamage: stats.unitDamage, flagGrabs: stats.flagGrabs, flagCaptures: stats.flagCaptures, lootGold: stats.lootGold, hillUncontestedTime: stats.hillUncontestedTime, hillContestedTime: stats.hillContestedTime }]))
   };
   const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
   navigator.clipboard?.writeText(encoded);
   alert("Post-game share code copied to clipboard.");
 }
 
-function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost }) {
+function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost, onUpdateSetup }) {
   const [tab, setTab] = useState("overview");
-  const [showMetrics, setShowMetrics] = useState({ damage: true, kills: true, flags: true, loot: true, deaths: false });
+  const [showMetrics, setShowMetrics] = useState({ damage: true, kills: true, flags: true, loot: true, hill: true, deaths: false });
   const results = lobby.game.results || summarizeResults(lobby.game, "manual");
   const teams = activeTeams(lobby.game.setup);
 
   const exportCsv = () => {
     const rows = results.allUnits ?? [];
-    const headers = ["rank", "team", "unit_id", "name", "style", "priority", "damage", "kills", "flag_grabs", "flag_captures", "resources_cleared", "levels_gained", "deaths", "attack", "strength", "defence", "magic", "range", "prayer", "hitpoints"];
+    const headers = ["rank", "team", "unit_id", "name", "style", "priority", "damage", "kills", "flag_grabs", "flag_captures", "hill_uncontested_seconds", "hill_contested_seconds", "resources_cleared", "levels_gained", "deaths", "attack", "strength", "defence", "magic", "range", "prayer", "hitpoints"];
     const esc = (v) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-    const csvRows = rows.map((u, i) => [i + 1, TEAM_META[u.team]?.name, u.id, u.name, STYLE[u.style]?.name, u.priority ?? "auto", u.totalDamage ?? 0, u.kills ?? 0, u.flagGrabs ?? 0, u.flagCaptures ?? 0, u.resourcesCleared ?? 0, u.levelsGained ?? 0, u.deathCount ?? 0, ...STAT_KEYS.map((k) => u.stats?.[k]?.level ?? 1)].map(esc).join(","));
+    const csvRows = rows.map((u, i) => [i + 1, TEAM_META[u.team]?.name, u.id, u.name, STYLE[u.style]?.name, u.priority ?? "auto", u.totalDamage ?? 0, u.kills ?? 0, u.flagGrabs ?? 0, u.flagCaptures ?? 0, Math.floor(u.hillUncontestedTime ?? 0), Math.floor(u.hillContestedTime ?? 0), u.resourcesCleared ?? 0, u.levelsGained ?? 0, u.deathCount ?? 0, ...STAT_KEYS.map((k) => u.stats?.[k]?.level ?? 1)].map(esc).join(","));
     const csv = [headers.join(","), ...csvRows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -3593,9 +4703,15 @@ function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost }) {
           <h2>Final Results: {results.winner || "No winner"}</h2>
           <p>Reason: {results.reason} • Fight time: {formatDuration(results.fightTime)}</p>
         </div>
-        <div className="action-group">
+        <div className="action-group results-actions">
           <Button onClick={exportCsv}>Export CSV</Button>
           <Button onClick={() => copyShareCode(lobby, results)}>Copy Share Code</Button>
+          {isHost && (
+            <div className="continue-roster-options">
+              <label className="toggle-check"><input type="checkbox" checked={Boolean(lobby.setup?.restockGoldOnContinued)} onChange={(e) => onUpdateSetup?.({ restockGoldOnContinued: e.target.checked })} /> Restock gold on continued</label>
+              <label>Restock gold <input type="number" min="0" value={lobby.setup?.continuedRestockGold ?? DEFAULT_SETUP.continuedRestockGold} disabled={!lobby.setup?.restockGoldOnContinued} onChange={(e) => onUpdateSetup?.({ continuedRestockGold: Number(e.target.value) })} /></label>
+            </div>
+          )}
           {isHost && <Button onClick={continueRosterToLobby} variant="success">Continue Roster</Button>}
           <Button onClick={resetToLobby} variant="primary">Back to Lobby</Button>
         </div>
@@ -3603,7 +4719,7 @@ function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost }) {
 
       <section className="tab-bar">
         <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Overview</button>
-        {teams.map((team) => <button key={team} className={tab === team ? "active" : ""} onClick={() => setTab(team)}>{TEAM_META[team].emoji} {TEAM_META[team].name}</button>)}
+        {teams.map((team) => <button key={team} className={tab === team ? "active" : ""} onClick={() => setTab(team)}>{teamDisplayLabel(lobby, team)}</button>)}
       </section>
 
       {tab === "overview" ? (
@@ -3623,6 +4739,7 @@ function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost }) {
               {Object.entries(results.bases || {}).map(([team, hp]) => <div className="result-line" key={team}>{TEAM_META[team]?.emoji} {TEAM_META[team]?.name}: {hp}</div>)}
             </div>
             {results.gameMode === "capture_flag" && <div className="card"><h3>Flag Scores</h3>{Object.entries(results.ctfScores || {}).map(([team, score]) => <div className="result-line" key={team}>{TEAM_META[team]?.emoji} {TEAM_META[team]?.name}: {score}</div>)}</div>}
+            {results.gameMode === "king_hill" && <div className="card"><h3>Hill Time</h3>{Object.entries(results.kothScores || {}).map(([team, score]) => <div className="result-line" key={team}>{TEAM_META[team]?.emoji} {TEAM_META[team]?.name}: {Math.floor(score)}s</div>)}</div>}
             <div className="card">
               <h3>Top Damage</h3>
               {(results.topDamage || []).map((u, i) => <ResultUnitLine key={u.id} unit={u} rank={i + 1} />)}
@@ -3634,7 +4751,7 @@ function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost }) {
           </section>
         </>
       ) : (
-        <TeamResults team={tab} results={results} />
+        <TeamResults team={tab} results={results} lobby={lobby} />
       )}
     </div>
   );
@@ -3646,6 +4763,7 @@ function ResultsGraphs({ results, showMetrics }) {
     ["kills", "Kills", (stats) => stats.kills ?? 0],
     ["flags", "Flags", (stats) => (stats.flagCaptures ?? 0) * 3 + (stats.flagGrabs ?? 0)],
     ["loot", "Loot gp", (stats) => stats.lootGold ?? 0],
+    ["hill", "Hill seconds", (stats) => Math.floor((stats.hillUncontestedTime ?? 0) + (stats.hillContestedTime ?? 0))],
     ["deaths", "Deaths", (stats) => stats.deaths ?? 0],
   ].filter(([key]) => showMetrics?.[key]);
   const teamEntries = Object.entries(results.teamStats || {});
@@ -3685,13 +4803,15 @@ function ResultUnitLine({ unit, rank }) {
       <span>{unit.kills ?? 0} kills</span>
       <span>{unit.flagGrabs ?? 0} grabs</span>
       <span>{unit.flagCaptures ?? 0} caps</span>
+      <span>{Math.floor(unit.hillUncontestedTime ?? 0)}s hill</span>
+      <span>{Math.floor(unit.hillContestedTime ?? 0)}s contested</span>
       <span>{unit.lootGold ?? 0}g loot</span>
       <span>{unit.deathCount ?? 0} deaths</span>
     </div>
   );
 }
 
-function TeamResults({ team, results }) {
+function TeamResults({ team, results, lobby }) {
   const [sortBy, setSortBy] = useState("damage");
   const rawStats = results.teamStats?.[team] || {};
   const sorters = {
@@ -3702,6 +4822,7 @@ function TeamResults({ team, results }) {
     levels: (a, b) => (b.levelsGained ?? 0) - (a.levelsGained ?? 0),
     flags: (a, b) => ((b.flagCaptures ?? 0) * 3 + (b.flagGrabs ?? 0)) - ((a.flagCaptures ?? 0) * 3 + (a.flagGrabs ?? 0)),
     loot: (a, b) => (b.lootGold ?? 0) - (a.lootGold ?? 0),
+    hill: (a, b) => ((b.hillUncontestedTime ?? 0) + (b.hillContestedTime ?? 0)) - ((a.hillUncontestedTime ?? 0) + (a.hillContestedTime ?? 0)),
     resources: (a, b) => (b.resourcesCleared ?? 0) - (a.resourcesCleared ?? 0),
   };
   const units = arrayFromObject(rawStats.units).sort((a, b) => (sorters[sortBy] || sorters.damage)(a, b) || (b.totalDamage ?? 0) - (a.totalDamage ?? 0) || (b.kills ?? 0) - (a.kills ?? 0));
@@ -3716,10 +4837,12 @@ function TeamResults({ team, results }) {
     flagGrabs: rawStats.flagGrabs ?? units.reduce((s, u) => s + (u.flagGrabs ?? 0), 0),
     flagCaptures: rawStats.flagCaptures ?? units.reduce((s, u) => s + (u.flagCaptures ?? 0), 0),
     lootGold: rawStats.lootGold ?? units.reduce((s, u) => s + (u.lootGold ?? 0), 0),
+    hillUncontestedTime: rawStats.hillUncontestedTime ?? units.reduce((s, u) => s + (u.hillUncontestedTime ?? 0), 0),
+    hillContestedTime: rawStats.hillContestedTime ?? units.reduce((s, u) => s + (u.hillContestedTime ?? 0), 0),
   };
   return (
     <section className="card">
-      <h3>{TEAM_META[team].emoji} {TEAM_META[team].name} Performance</h3>
+      <h3>{teamDisplayLabel(lobby, team)} Performance</h3>
       <div className="summary-grid">
         <Pill>Damage {stats.damage}</Pill>
         <Pill>Unit dmg {stats.unitDamage}</Pill>
@@ -3730,6 +4853,8 @@ function TeamResults({ team, results }) {
         <Pill>Deaths {stats.deaths}</Pill>
         <Pill>Grabs {stats.flagGrabs}</Pill>
         <Pill>Captures {stats.flagCaptures}</Pill>
+        <Pill>Hill uncontested {Math.floor(stats.hillUncontestedTime)}s</Pill>
+        <Pill>Hill contested {Math.floor(stats.hillContestedTime)}s</Pill>
         <Pill>Loot {stats.lootGold}g</Pill>
       </div>
       <label className="sort-label">Sort units
@@ -3738,6 +4863,7 @@ function TeamResults({ team, results }) {
           <option value="kills">Kills</option>
           <option value="flags">Flag grabs/captures</option>
           <option value="loot">Loot gold</option>
+          <option value="hill">Hill time</option>
           <option value="accuracy">Accuracy</option>
           <option value="levels">Levels gained</option>
           <option value="resources">Resources cleared</option>
@@ -3757,6 +4883,7 @@ function TeamResults({ team, results }) {
               <span>{u.damageToUnits ?? 0}/{u.damageToBases ?? 0} unit/base</span>
               <span>{u.kills ?? 0} kills</span>
               <span>{u.flagGrabs ?? 0} grabs / {u.flagCaptures ?? 0} caps</span>
+              <span>{Math.floor(u.hillUncontestedTime ?? 0)}s hill / {Math.floor(u.hillContestedTime ?? 0)}s contested</span>
               <span>{u.lootGold ?? 0}g loot</span>
               {resourceTargetType(u) && <span>{u.resourcesCleared ?? 0} cleared</span>}
               <span>{Math.round(100 * (u.hitsLanded ?? 0) / Math.max(1, u.attacksAttempted ?? 0))}% acc</span>
@@ -3783,6 +4910,7 @@ export default function QuadrantsOnline() {
   const [selectedResource, setSelectedResource] = useState(null);
   const [pendingManualTargetUnitId, setPendingManualTargetUnitId] = useState(null);
   const [visualToggles, setVisualToggles] = useState({ showHitsplats: true, showUnitNames: true });
+  const [contextMenu, setContextMenu] = useState(null);
 
   const player = lobby?.players?.[playerId] || null;
   const isHost = lobby?.hostId === playerId;
@@ -3808,28 +4936,48 @@ export default function QuadrantsOnline() {
     return () => unsub();
   }, [lobbyCode]);
 
+  const playerExistsInLobby = Boolean(lobby?.players?.[playerId]);
+
   useEffect(() => {
-    if (!lobbyCode || !playerId) return;
+    if (!lobbyCode || !playerId || !playerExistsInLobby) return;
     const connectedRef = ref(db, ".info/connected");
     const playerRef = ref(db, `lobbies/${lobbyCode}/players/${playerId}`);
+    let heartbeatId = null;
+    let disconnectReady = false;
+    const writePresence = () => update(playerRef, { connected: true, lastSeen: Date.now() }).catch(() => {});
     const unsub = onValue(connectedRef, (snap) => {
       if (snap.val() === true) {
-        update(playerRef, { connected: true, lastSeen: Date.now() });
-        onDisconnect(playerRef).update({ connected: false, lastSeen: serverTimestamp() });
+        writePresence();
+        if (!disconnectReady) {
+          disconnectReady = true;
+          onDisconnect(playerRef).update({ connected: false, lastSeen: serverTimestamp() });
+        }
+        if (!heartbeatId) heartbeatId = window.setInterval(writePresence, 12000);
+      } else if (heartbeatId) {
+        window.clearInterval(heartbeatId);
+        heartbeatId = null;
       }
     });
-    return () => unsub();
-  }, [lobbyCode, playerId]);
+    return () => {
+      unsub();
+      if (heartbeatId) window.clearInterval(heartbeatId);
+    };
+  }, [lobbyCode, playerId, playerExistsInLobby]);
 
   useEffect(() => {
     if (!lobby || !lobbyCode) return;
-    const connected = currentPlayers(lobby).filter((p) => p.connected);
+    const host = lobby.players?.[lobby.hostId];
+    if (host?.connected) return;
+    const lastSeen = typeof host?.lastSeen === "number" ? host.lastSeen : 0;
+    const hostIsStale = !host || !lastSeen || Date.now() - lastSeen > 15000;
+    if (!hostIsStale) return;
+    const connected = currentPlayers(lobby).filter((p) => p.connected && p.id !== lobby.hostId);
     if (!connected.length) return;
     const nextHost = [...connected].sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || String(a.id).localeCompare(String(b.id)))[0];
     if (nextHost && lobby.hostId !== nextHost.id) {
-      update(ref(db, `lobbies/${lobbyCode}`), { hostId: nextHost.id });
+      update(ref(db, `lobbies/${lobbyCode}`), { hostId: nextHost.id, updatedAt: Date.now() });
     }
-  }, [lobby, lobbyCode]);
+  }, [lobby?.hostId, lobby?.players, lobbyCode]);
 
   useEffect(() => {
     if (!lobby || !lobbyCode || !isHost || lobby.phase !== "fight") return;
@@ -3861,10 +5009,16 @@ export default function QuadrantsOnline() {
           "game/board": nextGame.board,
           "game/bases": nextGame.bases,
           "game/ctfScores": nextGame.ctfScores,
+          "game/kothScores": nextGame.kothScores,
+          "game/kothController": nextGame.kothController,
           "game/gold": nextGame.gold,
+          "game/loot": nextGame.loot,
+          "game/nextNpcSpawnAt": nextGame.nextNpcSpawnAt,
+          "game/nextNpcSpawnAtByStyle": nextGame.nextNpcSpawnAtByStyle,
           "game/killFeed": nextGame.killFeed,
           "game/splats": nextGame.splats,
           "game/effects": nextGame.effects,
+          "game/groundItems": nextGame.groundItems,
           "game/fightTime": nextGame.fightTime,
           "game/log": [`Fight ended: ${results.winner || "Draw"}.`, ...(nextGame.log || [])].slice(0, 8),
         });
@@ -3876,10 +5030,16 @@ export default function QuadrantsOnline() {
           board: nextGame.board,
           bases: nextGame.bases,
           ctfScores: nextGame.ctfScores,
+          kothScores: nextGame.kothScores,
+          kothController: nextGame.kothController,
           gold: nextGame.gold,
+          loot: nextGame.loot,
+          nextNpcSpawnAt: nextGame.nextNpcSpawnAt,
+          nextNpcSpawnAtByStyle: nextGame.nextNpcSpawnAtByStyle,
           killFeed: nextGame.killFeed,
           splats: nextGame.splats,
           effects: nextGame.effects,
+          groundItems: nextGame.groundItems,
           fightTime: nextGame.fightTime,
           log: nextGame.log,
         });
@@ -3969,13 +5129,16 @@ export default function QuadrantsOnline() {
       }
       const openTeam = openTeamForLobby(existing);
       const now = Date.now();
-      await update(ref(db, `lobbies/${code}/players/${playerId}`), {
-        id: playerId,
-        name: cleanName,
-        team: existing.players?.[playerId]?.team || openTeam || null,
-        connected: true,
-        joinedAt: existing.players?.[playerId]?.joinedAt || now,
-        lastSeen: now,
+      await update(ref(db), {
+        [`lobbies/${code}/players/${playerId}`]: {
+          id: playerId,
+          name: cleanName,
+          team: existing.players?.[playerId]?.team || openTeam || null,
+          connected: true,
+          joinedAt: existing.players?.[playerId]?.joinedAt || now,
+          lastSeen: now,
+        },
+        [`lobbies/${code}/kicked/${playerId}`]: null,
       });
       localStorage.setItem("quadrants_lobby_code", code);
       setLobbyCode(code);
@@ -3987,7 +5150,7 @@ export default function QuadrantsOnline() {
   }
 
   async function leaveLobby() {
-    if (lobbyCode) {
+    if (lobbyCode && lobby?.players?.[playerId]) {
       await update(ref(db, `lobbies/${lobbyCode}/players/${playerId}`), { connected: false, lastSeen: Date.now() });
     }
     localStorage.removeItem("quadrants_lobby_code");
@@ -3996,9 +5159,27 @@ export default function QuadrantsOnline() {
   }
 
   async function updateSetup(patch) {
-    if (!lobby || !isHost || lobby.phase !== "lobby") return;
+    if (!lobby || !isHost) return;
+    const restockOnly = Object.keys(patch || {}).every((key) => ["restockGoldOnContinued", "continuedRestockGold"].includes(key));
+    if (lobby.phase === "results" && restockOnly) {
+      const nextSetup = { ...lobby.setup, ...patch };
+      await update(ref(db, `lobbies/${lobbyCode}`), {
+        setup: nextSetup,
+        "game/setup/restockGoldOnContinued": Boolean(nextSetup.restockGoldOnContinued),
+        "game/setup/continuedRestockGold": Math.max(0, Number(nextSetup.continuedRestockGold) || 0),
+        updatedAt: Date.now(),
+      });
+      return;
+    }
+    if (lobby.phase !== "lobby") return;
     const nextSetup = { ...lobby.setup, ...patch };
-    if (Object.prototype.hasOwnProperty.call(patch, "gridSize") && !Object.prototype.hasOwnProperty.call(patch, "baseZoneSize")) nextSetup.baseZoneSize = Number(patch.gridSize) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE;
+    nextSetup.players = clampPlayerCount(nextSetup.players);
+    if (nextSetup.players >= 5) {
+      nextSetup.gridSize = Math.max(30, Number(nextSetup.gridSize) || 30);
+      if (!Object.prototype.hasOwnProperty.call(patch, "baseZoneSize")) nextSetup.baseZoneSize = LARGE_BASE_ZONE_SIZE;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "gridSize") && !Object.prototype.hasOwnProperty.call(patch, "baseZoneSize")) nextSetup.baseZoneSize = Number(nextSetup.gridSize) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE;
+    nextSetup.alliances = normalizeTeamAlliances(nextSetup);
     const game = makeInitialGame(nextSetup);
     const teams = activeTeams(nextSetup);
     const players = { ...(lobby.players || {}) };
@@ -4035,6 +5216,67 @@ export default function QuadrantsOnline() {
     await update(ref(db, `lobbies/${lobbyCode}/players/${playerId}`), { team: team || null });
   }
 
+  async function chooseAlliance(team, allianceId) {
+    if (!lobby || lobby.phase !== "lobby" || !lobby.setup?.teamMode) return;
+    const active = activeTeams(lobby.setup || DEFAULT_SETUP);
+    const valid = new Set(validAllianceIds());
+    if (!team || !active.includes(team) || !valid.has(allianceId)) return;
+    if (!isHost && player?.team !== team) return;
+    const alliances = normalizeTeamAlliances(lobby.setup);
+    alliances[team] = allianceId;
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/setup/alliances`]: alliances,
+      [`lobbies/${lobbyCode}/game/setup/alliances`]: alliances,
+      [`lobbies/${lobbyCode}/ready/build`]: {},
+      [`lobbies/${lobbyCode}/ready/buy`]: {},
+      [`lobbies/${lobbyCode}/updatedAt`]: Date.now(),
+    });
+  }
+
+  async function hostSetPlayerTeam(targetPlayerId, team) {
+    if (!lobby || !isHost || lobby.phase !== "lobby") return;
+    const target = lobby.players?.[targetPlayerId];
+    if (!target) return;
+    const active = activeTeams(lobby.setup || DEFAULT_SETUP);
+    if (team && !active.includes(team)) return;
+    const taken = team ? currentPlayers(lobby).some((p) => p.id !== targetPlayerId && p.team === team) : false;
+    if (taken) return;
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/players/${targetPlayerId}/team`]: team || null,
+      [`lobbies/${lobbyCode}/ready/build`]: {},
+      [`lobbies/${lobbyCode}/ready/buy`]: {},
+      [`lobbies/${lobbyCode}/updatedAt`]: Date.now(),
+    });
+  }
+
+  async function hostKickPlayer(targetPlayerId) {
+    if (!lobby || !isHost || lobby.phase !== "lobby") return;
+    if (targetPlayerId === playerId) return;
+    const target = lobby.players?.[targetPlayerId];
+    if (!target) return;
+    if (!confirm(`Remove ${target.name || "this player"} from the lobby? They can rejoin as a fresh player.`)) return;
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/players/${targetPlayerId}`]: null,
+      [`lobbies/${lobbyCode}/ready/build/${targetPlayerId}`]: null,
+      [`lobbies/${lobbyCode}/ready/buy/${targetPlayerId}`]: null,
+      [`lobbies/${lobbyCode}/voteEnd/${targetPlayerId}`]: null,
+      [`lobbies/${lobbyCode}/kicked/${targetPlayerId}`]: null,
+      [`lobbies/${lobbyCode}/game/log`]: [`${target.name || "A player"} was removed from the lobby. They can rejoin as a fresh player.`, ...(game?.log || [])].slice(0, 8),
+      [`lobbies/${lobbyCode}/updatedAt`]: Date.now(),
+    });
+  }
+
+  async function hostSetHost(targetPlayerId) {
+    if (!lobby || !isHost || lobby.phase !== "lobby") return;
+    const target = lobby.players?.[targetPlayerId];
+    if (!target) return;
+    await update(ref(db, `lobbies/${lobbyCode}`), {
+      hostId: targetPlayerId,
+      updatedAt: Date.now(),
+      "game/log": [`${target.name || "A player"} is now host.`, ...(game?.log || [])].slice(0, 8),
+    });
+  }
+
   async function startBuild() {
     if (!lobby || !isHost) return;
     const game = makeInitialGame(lobby.setup);
@@ -4058,7 +5300,7 @@ export default function QuadrantsOnline() {
       game.loot = { ...makeLoot(lobby.setup), ...(lobby.carryoverLoot || {}) };
       game.log = [`Build Phase started with continued roster on ${MAP_TEMPLATES[lobby.setup.mapTemplate || "classic"]?.name || "Classic"}.`, "Edit rules/map here; if a team is over the unit cap, sell units in Buy Phase before fighting."];
     } else {
-      game.log = [`Build Phase started on ${MAP_TEMPLATES[lobby.setup.mapTemplate || "classic"]?.name || "Classic"}.`, "Each player builds their own quadrant. Connect every base to the neutral center before advancing."];
+      game.log = [`Build Phase started on ${MAP_TEMPLATES[lobby.setup.mapTemplate || "classic"]?.name || "Classic"}.`, "Each player builds their own zone. Connect every base to the neutral center before advancing."];
     }
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "build",
@@ -4103,6 +5345,8 @@ export default function QuadrantsOnline() {
       "game/fightTime": 0,
       "game/splats": {},
       "game/effects": {},
+      "game/kothScores": Object.fromEntries(activeTeams(lobby.game.setup).map((team) => [team, 0])),
+      "game/kothController": null,
       voteEnd: {},
       "game/log": [`${GAME_MODES[lobby.game.setup.gameMode || "classic"]?.name || "Fight"} started. Host browser simulates combat; host migration continues if host disconnects.`, ...(lobby.game.log || [])].slice(0, 8),
     });
@@ -4124,7 +5368,7 @@ export default function QuadrantsOnline() {
 
   async function setOrder(team, target) {
     if (!lobby || !game || !canPlayerControlTarget(player, team)) return;
-    const allowedTargets = ["blank", "defend", ...targetableBaseTeams(game.bases || {}, game.setup, team)];
+    const allowedTargets = ["blank", "defend", ...((game.setup?.gameMode || "classic") === "king_hill" ? ["hill"] : []), ...targetableBaseTeams(game.bases || {}, game.setup, team)];
     if (!allowedTargets.includes(target)) return;
     await update(ref(db, `lobbies/${lobbyCode}/game/orders/${team}`), { target });
   }
@@ -4199,10 +5443,27 @@ export default function QuadrantsOnline() {
     const unit = game.units?.[unitId];
     if (!unit || unit.team !== player.team) return;
     const refund = STYLE[unit.style]?.cost ?? 0;
+    const inventory = getTeamInventory(game, player.team);
+    const equipment = { ...makeDefaultEquipment(), ...(unit.equipment || {}) };
+    const marketUpdates = {};
+    let autoSellGold = 0;
+    for (const slot of EQUIPMENT_SLOTS) {
+      const equipped = equipment[slot];
+      if (!equipped) continue;
+      if (addInventoryEntryToArray(inventory, equipped)) {
+        // returned gear was added to loot, stacking when possible
+      } else {
+        const market = makeMarketItem(equipped, player.team);
+        if (market) marketUpdates[`lobbies/${lobbyCode}/game/marketItems/${firebaseSafeKey(market.marketId)}`] = market;
+        autoSellGold += sellValueForItem(equipped);
+      }
+    }
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/units/${unitId}`]: null,
-      [`lobbies/${lobbyCode}/game/gold/${player.team}`]: (game.gold?.[player.team] ?? 0) + refund,
-      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} sold ${unit.name} for ${refund}g.`, ...(game.log || [])].slice(0, 8),
+      [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
+      [`lobbies/${lobbyCode}/game/gold/${player.team}`]: (game.gold?.[player.team] ?? 0) + refund + autoSellGold,
+      ...marketUpdates,
+      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} sold ${unit.name} for ${refund}g${autoSellGold ? ` and auto-sold overflow gear for ${autoSellGold}g` : ""}.`, ...(game.log || [])].slice(0, 8),
     });
   }
 
@@ -4215,9 +5476,8 @@ export default function QuadrantsOnline() {
     const team = player.team;
     const gold = game.gold?.[team] ?? 0;
     const inventory = getTeamInventory(game, team);
-    const openSlot = firstOpenInventorySlot(inventory);
-    if (gold < item.cost || openSlot < 0) return;
-    inventory[openSlot] = makeInventoryItem(itemId);
+    if (gold < item.cost) return;
+    if (!addInventoryEntryToArray(inventory, makeInventoryItem(itemId))) return;
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/loot/${team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/gold/${team}`]: gold - item.cost,
@@ -4237,7 +5497,7 @@ export default function QuadrantsOnline() {
     if (!market) return;
     const marketKey = firebaseSafeKey(market.marketId);
     const refund = sellValueForItem(picked);
-    inventory[inventoryIndex] = null;
+    removeOneInventoryEntry(inventory, inventoryIndex);
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/marketItems/${marketKey}`]: market,
@@ -4249,22 +5509,23 @@ export default function QuadrantsOnline() {
   async function buyMarketItem(marketKey) {
     if (!lobby || lobby.phase !== "buy" || !player?.team) return;
     if (readyMap(lobby, "buy")[playerId]) return;
-    const listing = game.marketItems?.[marketKey];
+    const shopBuy = typeof marketKey === "object" && marketKey?.shop;
+    const listing = shopBuy ? { itemId: marketKey.itemId, price: marketKey.price } : game.marketItems?.[marketKey];
     const item = itemById(listing);
     if (!listing || !item) return;
     const price = Number(listing.price ?? item.cost ?? 0);
     const gold = game.gold?.[player.team] ?? 0;
     const inventory = getTeamInventory(game, player.team);
-    const openSlot = firstOpenInventorySlot(inventory);
-    if (gold < price || openSlot < 0) return;
+    if (gold < price) return;
     const { key: _key, marketId: _marketId, sellerTeam: _sellerTeam, listedAt: _listedAt, price: _price, ...inventoryItem } = listing;
-    inventory[openSlot] = { instanceId: inventoryItem.instanceId || makeRuntimeId("item"), itemId: inventoryItem.itemId || item.id };
-    await update(ref(db), {
+    if (!addInventoryEntryToArray(inventory, { instanceId: inventoryItem.instanceId || makeRuntimeId("item"), itemId: inventoryItem.itemId || item.id })) return;
+    const updates = {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/gold/${player.team}`]: gold - price,
-      [`lobbies/${lobbyCode}/game/marketItems/${marketKey}`]: null,
       [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${item.name} from the gear shop for ${price}g.`, ...(game.log || [])].slice(0, 8),
-    });
+    };
+    if (!shopBuy) updates[`lobbies/${lobbyCode}/game/marketItems/${marketKey}`] = null;
+    await update(ref(db), updates);
   }
 
   async function equipInventoryItem(inventoryIndex, unitId, equipSlot = null) {
@@ -4275,18 +5536,33 @@ export default function QuadrantsOnline() {
     const inventory = getTeamInventory(game, player.team);
     const picked = inventory[inventoryIndex];
     const item = itemById(picked);
+    if (item?.consumable === "prayerXp") {
+      const patchedUnit = { ...unit, stats: JSON.parse(JSON.stringify(unit.stats || makeStats(unit.style))) };
+      grantXp(patchedUnit, "prayer", item.prayerXp ?? 1);
+      removeOneInventoryEntry(inventory, inventoryIndex);
+      await update(ref(db), {
+        [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
+        [`lobbies/${lobbyCode}/game/units/${unit.id}/stats`]: patchedUnit.stats,
+        [`lobbies/${lobbyCode}/game/units/${unit.id}/levelsGained`]: patchedUnit.levelsGained ?? unit.levelsGained ?? 0,
+        [`lobbies/${lobbyCode}/game/log`]: [`${player.name} used ${item.name} on ${unit.name} for Prayer XP.`, ...(game.log || [])].slice(0, 8),
+      });
+      return;
+    }
     const resolvedSlot = equipSlot || item?.slot;
     if (!item || !EQUIPMENT_SLOTS.includes(resolvedSlot) || item.slot !== resolvedSlot) return;
     const equipment = { ...makeDefaultEquipment(), ...(unit.equipment || {}) };
     if (!canEquipItemToSlot(unit, item, resolvedSlot)) return;
-    inventory[inventoryIndex] = equipment[resolvedSlot] || null;
-    equipment[resolvedSlot] = picked;
+    const nextInventory = [...inventory];
+    const pickedOne = removeOneInventoryEntry(nextInventory, inventoryIndex);
+    if (!pickedOne) return;
+    const displaced = equipment[resolvedSlot] || null;
+    equipment[resolvedSlot] = pickedOne;
+    if (displaced && !addInventoryEntryToArray(nextInventory, displaced)) return;
     if (resolvedSlot === "weapon" && item.twoHanded && equipment.offHand) {
-      const openSlot = firstOpenInventorySlot(inventory);
-      if (openSlot < 0) return;
-      inventory[openSlot] = equipment.offHand;
+      if (!addInventoryEntryToArray(nextInventory, equipment.offHand)) return;
       equipment.offHand = null;
     }
+    inventory.splice(0, inventory.length, ...nextInventory);
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/units/${unitId}/equipment`]: equipment,
@@ -4303,14 +5579,210 @@ export default function QuadrantsOnline() {
     const equipped = equipment[equipSlot];
     if (!equipped) return;
     const inventory = getTeamInventory(game, player.team);
-    const openSlot = firstOpenInventorySlot(inventory);
-    if (openSlot < 0) return;
-    inventory[openSlot] = equipped;
+    if (!addInventoryEntryToArray(inventory, equipped)) return;
     equipment[equipSlot] = null;
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/units/${unitId}/equipment`]: equipment,
       [`lobbies/${lobbyCode}/game/log`]: [`${unit.name} unequipped ${itemById(equipped)?.name || "gear"}.`, ...(game.log || [])].slice(0, 8),
+    });
+  }
+
+  function selectedActiveOwnUnit() {
+    if (!selectedUnitId || !player?.team) return null;
+    const unit = game?.units?.[selectedUnitId];
+    if (!unit || unit.team !== player.team || (unit.hp ?? 0) <= 0) return null;
+    return unit;
+  }
+
+  function openInventoryContextMenu(event, inventoryIndex) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!lobby || lobby.phase !== "fight" || !player?.team) return;
+    const inventory = getTeamInventory(game, player.team);
+    const picked = inventory[inventoryIndex];
+    const item = itemById(picked);
+    if (!item) return;
+    const unit = selectedActiveOwnUnit();
+    const canDrop = Boolean(unit);
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      title: item.name,
+      items: [{
+        icon: "⬇️",
+        label: canDrop ? `Drop under ${unit.name}` : "Select one of your living units to drop",
+        disabled: !canDrop,
+        action: () => dropInventoryItem(inventoryIndex),
+      }],
+    });
+  }
+
+  async function dropInventoryItem(inventoryIndex) {
+    if (!lobby || lobby.phase !== "fight" || !player?.team) return;
+    const unit = selectedActiveOwnUnit();
+    if (!unit) return;
+    const inventory = getTeamInventory(game, player.team);
+    const picked = inventory[inventoryIndex];
+    const item = itemById(picked);
+    if (!item) return;
+    const ground = makeGroundItem(picked, unit.row, unit.col, player.team, game?.fightTime || 0, unit.id);
+    if (!ground) return;
+    removeOneInventoryEntry(inventory, inventoryIndex);
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
+      [`lobbies/${lobbyCode}/game/groundItems/${firebaseSafeKey(ground.id)}`]: ground,
+      [`lobbies/${lobbyCode}/game/log`]: [`${unit.name} dropped ${item.name}.`, ...(game.log || [])].slice(0, 8),
+    });
+  }
+
+  function openGroundItemsContextMenu(event, items, cell) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!lobby || lobby.phase !== "fight") return;
+    const unit = selectedActiveOwnUnit();
+    const fightTime = game?.fightTime || 0;
+    const available = (items || []).filter((entry) => itemById(entry) && groundItemRemainingSeconds(entry, fightTime) > 0);
+    if (!available.length) return;
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      title: `Ground items (${cell.row},${cell.col})`,
+      items: available.map((entry) => ({
+        icon: "🎒",
+        label: `${itemLabel(entry)} • ${groundItemRemainingSeconds(entry, fightTime)}s`,
+        title: unit ? `${unit.name} will path to pick this up.` : "Select one of your living units first.",
+        disabled: !unit,
+        action: () => orderPickupGroundItem(entry.id),
+      })),
+    });
+  }
+
+  async function orderPickupGroundItem(groundItemId) {
+    if (!lobby || lobby.phase !== "fight") return;
+    const unit = selectedActiveOwnUnit();
+    if (!unit) return;
+    const item = groundItemsArray(game?.groundItems).find((entry) => entry.id === groundItemId);
+    if (!item || groundItemRemainingSeconds(item, game?.fightTime || 0) <= 0) return;
+    await updateFightUnitConfig(unit.id, {
+      targetOverride: "manual",
+      manualTargetType: "groundItem",
+      manualTargetUnitId: null,
+      manualTargetRow: item.row,
+      manualTargetCol: item.col,
+      manualResourceType: null,
+      manualGroundItemId: item.id,
+      manualTargetStartedAt: game?.fightTime ?? 0,
+      manualTargetBlockedSince: null,
+      homeTeleportStartedAt: null,
+      homeTeleportHpAtStart: null,
+      homeTeleportLastAttackedAtStart: null,
+      homeTeleportPreviousTargetOverride: null,
+      homeTeleportPreviousManualTargetType: null,
+      homeTeleportPreviousManualTargetUnitId: null,
+      homeTeleportPreviousManualTargetRow: null,
+      homeTeleportPreviousManualTargetCol: null,
+      homeTeleportPreviousManualResourceType: null,
+      homeTeleportPreviousManualGroundItemId: null,
+    });
+    setSelectedUnitId(unit.id);
+    setSelectedResource(null);
+    setPendingManualTargetUnitId(null);
+  }
+
+  function openBoardContextMenu(event, cell, cellUnits = [], cellGroundItems = []) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!lobby || lobby.phase !== "fight") return;
+    const unit = selectedActiveOwnUnit();
+    const setup = game?.setup || DEFAULT_SETUP;
+    const fightTime = game?.fightTime || 0;
+    const liveUnits = (cellUnits || []).filter((u) => (u.hp ?? 0) > 0);
+    const hostileUnits = unit ? liveUnits.filter((target) => target.id !== unit.id && areHostileTeams(unit.team, target.team, setup)) : [];
+    const followUnits = unit ? liveUnits.filter((target) => target.id !== unit.id && !areHostileTeams(unit.team, target.team, setup)) : [];
+    const availableGround = (cellGroundItems || []).filter((entry) => itemById(entry) && groundItemRemainingSeconds(entry, fightTime) > 0);
+    const unitResource = unit ? resourceTargetType(unit) : null;
+    const canClear = Boolean(unit && unitResource && cell?.type === unitResource);
+    const canMove = Boolean(unit && cell && canUnitStandAt(game.board, arrayFromObject(game.units), unit, cell.row, cell.col, setup, { ignoreOccupied: unit.row === cell.row && unit.col === cell.col }));
+    const menuItems = [];
+
+    menuItems.push({
+      icon: "🚶",
+      label: unit ? `Go to tile ${cell.row},${cell.col}` : "Select one of your living units first",
+      disabled: !unit || !canMove,
+      title: canMove ? "Orders the selected unit to path to this tile." : "The clicked tile is not walkable.",
+      action: () => setManualTarget(unit.id, {
+        manualTargetType: "tile",
+        manualTargetUnitId: null,
+        manualTargetRow: cell.row,
+        manualTargetCol: cell.col,
+        manualResourceType: null,
+        manualGroundItemId: null,
+      }),
+    });
+
+    for (const target of hostileUnits) {
+      menuItems.push({
+        icon: "⚔️",
+        label: `Attack ${target.name}`,
+        action: () => setManualTarget(unit.id, {
+          manualTargetType: "unit",
+          manualTargetUnitId: target.id,
+          manualTargetRow: null,
+          manualTargetCol: null,
+          manualResourceType: null,
+          manualGroundItemId: null,
+        }),
+      });
+    }
+
+    for (const target of followUnits) {
+      menuItems.push({
+        icon: "👣",
+        label: `Follow ${target.name}`,
+        action: () => setManualTarget(unit.id, {
+          manualTargetType: "follow",
+          manualTargetUnitId: target.id,
+          manualTargetRow: null,
+          manualTargetCol: null,
+          manualResourceType: null,
+          manualGroundItemId: null,
+        }),
+      });
+    }
+
+    menuItems.push({
+      icon: cell?.type === "rock" ? "⛏️" : "🌲",
+      label: cell?.type === "rock" ? "Clear rock" : cell?.type === "tree" ? "Clear tree" : "Clear tile",
+      disabled: !canClear,
+      title: unit ? (canClear ? "Orders your skiller to clear this resource." : "Selected unit cannot clear this tile type.") : "Select one of your living units first.",
+      action: () => setManualTarget(unit.id, {
+        manualTargetType: "resource",
+        manualTargetUnitId: null,
+        manualTargetRow: cell.row,
+        manualTargetCol: cell.col,
+        manualResourceType: unitResource,
+        manualGroundItemId: null,
+      }),
+    });
+
+    if (availableGround.length) menuItems.push({ type: "divider" });
+    for (const entry of availableGround) {
+      menuItems.push({
+        icon: "🎒",
+        label: `Pick up ${itemLabel(entry)} • ${groundItemRemainingSeconds(entry, fightTime)}s`,
+        disabled: !unit,
+        title: unit ? `${unit.name} will path to this item.` : "Select one of your living units first.",
+        action: () => orderPickupGroundItem(entry.id),
+      });
+    }
+
+    if (!menuItems.length) return;
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      title: unit ? `${unit.name} orders` : `Tile ${cell.row},${cell.col}`,
+      items: menuItems,
     });
   }
 
@@ -4330,7 +5802,7 @@ export default function QuadrantsOnline() {
     const unit = activeUnit || queuedUnit;
     if (!unit || unit.team !== player?.team) return;
     const basePath = activeUnit ? `lobbies/${lobbyCode}/game/units/${unitId}` : `lobbies/${lobbyCode}/game/respawnQueue/${unitId}`;
-    const allowed = new Set(["name", "priority", "targetOverride", "manualTargetType", "manualTargetUnitId", "manualTargetRow", "manualTargetCol", "manualResourceType", "manualTargetStartedAt", "manualTargetBlockedSince", "homeTeleportStartedAt", "homeTeleportHpAtStart", "homeTeleportLastAttackedAtStart", "homeTeleportPreviousTargetOverride", "homeTeleportPreviousManualTargetType", "homeTeleportPreviousManualTargetUnitId", "homeTeleportPreviousManualTargetRow", "homeTeleportPreviousManualTargetCol", "homeTeleportPreviousManualResourceType"]);
+    const allowed = new Set(["name", "priority", "targetOverride", "manualTargetType", "manualTargetUnitId", "manualTargetRow", "manualTargetCol", "manualResourceType", "manualGroundItemId", "manualTargetStartedAt", "manualTargetBlockedSince", "homeTeleportStartedAt", "homeTeleportHpAtStart", "homeTeleportLastAttackedAtStart", "homeTeleportPreviousTargetOverride", "homeTeleportPreviousManualTargetType", "homeTeleportPreviousManualTargetUnitId", "homeTeleportPreviousManualTargetRow", "homeTeleportPreviousManualTargetCol", "homeTeleportPreviousManualResourceType", "homeTeleportPreviousManualGroundItemId"]);
     const updates = {};
     for (const [k, v] of Object.entries(patch)) {
       if (allowed.has(k)) updates[`${basePath}/${k}`] = v;
@@ -4347,6 +5819,7 @@ export default function QuadrantsOnline() {
       manualTargetStartedAt: game?.fightTime ?? 0,
       manualTargetBlockedSince: null,
       manualResourceType: null,
+      manualGroundItemId: null,
       homeTeleportStartedAt: null,
       homeTeleportHpAtStart: null,
       homeTeleportLastAttackedAtStart: null,
@@ -4356,6 +5829,7 @@ export default function QuadrantsOnline() {
       homeTeleportPreviousManualTargetRow: null,
       homeTeleportPreviousManualTargetCol: null,
       homeTeleportPreviousManualResourceType: null,
+      homeTeleportPreviousManualGroundItemId: null,
       ...patch,
     });
     setSelectedUnitId(unitId);
@@ -4375,6 +5849,7 @@ export default function QuadrantsOnline() {
           manualTargetRow: row,
           manualTargetCol: col,
           manualResourceType: resourceType,
+          manualGroundItemId: null,
         });
       } else {
         await setManualTarget(pendingManualTargetUnitId, {
@@ -4383,6 +5858,7 @@ export default function QuadrantsOnline() {
           manualTargetRow: row,
           manualTargetCol: col,
           manualResourceType: null,
+          manualGroundItemId: null,
         });
       }
       return;
@@ -4401,13 +5877,14 @@ export default function QuadrantsOnline() {
     if (pendingManualTargetUnitId) {
       const commander = game?.units?.[pendingManualTargetUnitId];
       const target = game?.units?.[unitId];
-      if (commander && target && target.team !== commander.team && (target.hp ?? 0) > 0) {
+      if (commander && target && areHostileTeams(commander.team, target.team, game.setup) && (target.hp ?? 0) > 0) {
         await setManualTarget(pendingManualTargetUnitId, {
           manualTargetType: "unit",
           manualTargetUnitId: unitId,
           manualTargetRow: null,
           manualTargetCol: null,
           manualResourceType: null,
+          manualGroundItemId: null,
         });
       } else if (target) {
         await setManualTarget(pendingManualTargetUnitId, {
@@ -4416,6 +5893,7 @@ export default function QuadrantsOnline() {
           manualTargetRow: target.row,
           manualTargetCol: target.col,
           manualResourceType: null,
+          manualGroundItemId: null,
         });
       }
       return;
@@ -4447,12 +5925,17 @@ export default function QuadrantsOnline() {
         maxHpSeen: Math.max(u.maxHpSeen ?? 0, u.stats?.hitpoints?.level ?? 1),
       }));
     const nextGame = makeInitialGame(lobby.setup);
+    const carryoverGold = { ...(previous.gold || makeGold(lobby.setup)) };
+    if (lobby.setup?.restockGoldOnContinued) {
+      const floor = Math.max(0, Number(lobby.setup.continuedRestockGold ?? DEFAULT_SETUP.continuedRestockGold) || 0);
+      for (const team of active) carryoverGold[team] = Math.max(Number(carryoverGold[team] ?? 0), floor);
+    }
     nextGame.log = ["Continued roster loaded. Edit map/rules in the lobby, then start a new build. Sell units in Buy Phase if a team is over the max unit rule."];
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "lobby",
       game: nextGame,
       continuedRoster: objectFromArray(nextUnits),
-      carryoverGold: previous.gold || makeGold(lobby.setup),
+      carryoverGold,
       carryoverLoot: previous.loot || makeLoot(lobby.setup),
       ready: { build: {}, buy: {} },
       voteEnd: {},
@@ -4473,6 +5956,7 @@ export default function QuadrantsOnline() {
   if (!lobbyCode || !lobby) {
     return <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} status={status} />;
   }
+
 
   if (!player) {
     return (
@@ -4512,12 +5996,10 @@ export default function QuadrantsOnline() {
               <span className="vote-mini">{activeGamePlayers(lobby).map((p) => `${p.name}:${lobby.voteEnd?.[p.id] ? "yes" : "no"}`).join(" • ")}</span>
             </div>
           )}
-          {phase === "build" && <PhaseReadyTopBar lobby={lobby} player={player} phase="build" onToggleReady={(v) => setReady("build", v)} isHost={isHost} onAdvance={advanceToBuy} advanceText="To Buy" canAdvance={buildCanAdvance} />}
-          {phase === "buy" && <PhaseReadyTopBar lobby={lobby} player={player} phase="buy" onToggleReady={(v) => setReady("buy", v)} isHost={isHost} onAdvance={startFight} advanceText="Start Fight" canAdvance={buyCanAdvance} blockReadyReason={myBuyOverLimit ? "You are over the unit cap. Sell units until your roster is within the limit before finalizing." : ""} />}
           <label className="toggle-check"><input type="checkbox" checked={visualToggles.showHitsplats} onChange={(e) => setVisualToggles((v) => ({ ...v, showHitsplats: e.target.checked }))} /> Hitsplats</label>
           <label className="toggle-check"><input type="checkbox" checked={visualToggles.showUnitNames} onChange={(e) => setVisualToggles((v) => ({ ...v, showUnitNames: e.target.checked }))} /> Names</label>
           <Pill tone={player.connected ? "ready" : "waiting"}>{player.name}</Pill>
-          <Pill>{player.team ? `${TEAM_META[player.team].emoji} ${TEAM_META[player.team].name}` : "Spectator"}</Pill>
+          <Pill>{player.team ? teamDisplayLabel(lobby, player.team) : "Spectator"}</Pill>
           {isHost && <Pill tone="host">You are host</Pill>}
           <Button onClick={leaveLobby}>Leave</Button>
           {isHost && <Button onClick={deleteLobby}>Delete Lobby</Button>}
@@ -4526,7 +6008,7 @@ export default function QuadrantsOnline() {
 
       {phase === "lobby" && (
         <main className="main-shell">
-          <LobbyView lobby={lobby} playerId={playerId} isHost={isHost} onUpdateSetup={updateSetup} onStartBuild={startBuild} onChooseTeam={chooseTeam} onLeave={leaveLobby} />
+          <LobbyView lobby={lobby} playerId={playerId} isHost={isHost} onUpdateSetup={updateSetup} onStartBuild={startBuild} onChooseTeam={chooseTeam} onChooseAlliance={chooseAlliance} onLeave={leaveLobby} onHostSetPlayerTeam={hostSetPlayerTeam} onHostKickPlayer={hostKickPlayer} onHostSetHost={hostSetHost} />
         </main>
       )}
 
@@ -4543,28 +6025,29 @@ export default function QuadrantsOnline() {
         <main className="buy-shell">
           <section className="board-card buy-board-card">
             <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={() => {}} selectedUnitId={selectedUnitId} visualToggles={visualToggles} />
-            <BuyPanel lobby={lobby} player={player} onBuy={buyUnit} onBuyMarketItem={buyMarketItem} onSellInventoryItem={sellInventoryItem} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} onUpdateUnit={updateUnitConfig} onRemoveUnit={removeBuyUnit} />
+            <BuyPanel lobby={lobby} player={player} onBuy={buyUnit} onBuyMarketItem={buyMarketItem} onSellInventoryItem={sellInventoryItem} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} onUpdateUnit={updateUnitConfig} onRemoveUnit={removeBuyUnit} onReady={(v) => setReady("buy", v)} isHost={isHost} onAdvance={startFight} />
           </section>
         </main>
       )}
 
       {phase === "fight" && (
         <main className="fight-shell">
-          <FightLeftPanel lobby={lobby} player={player} selectedUnitId={selectedUnitId} setSelectedUnitId={setSelectedUnitId} selectedResource={selectedResource} setSelectedResource={setSelectedResource} onUpdateUnit={updateFightUnitConfig} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); setPendingManualTargetUnitId(unitId); }} />
+          <FightLeftPanel lobby={lobby} player={player} selectedUnitId={selectedUnitId} setSelectedUnitId={setSelectedUnitId} selectedResource={selectedResource} setSelectedResource={setSelectedResource} onUpdateUnit={updateFightUnitConfig} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); setPendingManualTargetUnitId(unitId); }} onEquipItem={equipInventoryItem} />
           <section className={`board-card ${pendingManualTargetUnitId ? "manual-target-active" : ""}`}>
             {pendingManualTargetUnitId && <div className="manual-target-banner">Select target for {game?.units?.[pendingManualTargetUnitId]?.name || "unit"}: click an enemy unit to attack, a road/base tile to move, or a matching tree/rock to chop/mine.</div>}
-            <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={handleFightCellClick} onUnitClick={handleFightUnitClick} selectedUnitId={selectedUnitId} selectedResource={selectedResource} visualToggles={visualToggles} />
+            <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={handleFightCellClick} onUnitClick={handleFightUnitClick} selectedUnitId={selectedUnitId} selectedResource={selectedResource} visualToggles={visualToggles} onGroundItemsContextMenu={openGroundItemsContextMenu} onBoardContextMenu={openBoardContextMenu} />
             {showStats && <FightStats lobby={lobby} player={player} />}
           </section>
-          <FightPanel lobby={lobby} player={player} showStats={showStats} setShowStats={setShowStats} onSetOrder={setOrder} selectedUnitId={selectedUnitId} onSelectUnit={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); }} onEquipItem={equipInventoryItem} />
+          <FightPanel lobby={lobby} player={player} showStats={showStats} setShowStats={setShowStats} onSetOrder={setOrder} selectedUnitId={selectedUnitId} onSelectUnit={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); }} onEquipItem={equipInventoryItem} onInventoryContextMenu={openInventoryContextMenu} />
         </main>
       )}
 
       {phase === "results" && (
         <main className="main-shell">
-          <ResultsView lobby={lobby} resetToLobby={resetToLobby} continueRosterToLobby={continueRosterToLobby} isHost={isHost} />
+          <ResultsView lobby={lobby} resetToLobby={resetToLobby} continueRosterToLobby={continueRosterToLobby} isHost={isHost} onUpdateSetup={updateSetup} />
         </main>
       )}
+      <GameContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
     </div>
   );
 }

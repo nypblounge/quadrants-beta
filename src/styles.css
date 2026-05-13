@@ -1105,6 +1105,32 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   font-size: 12px;
   font-weight: 800;
 }
+
+.gear-stack-icon-wrap {
+  position: relative;
+  width: 42px;
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+}
+.gear-stock-badge {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  min-width: 22px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  border: 1px solid rgba(250,204,21,.7);
+  background: rgba(12,10,9,.92);
+  color: #fde68a !important;
+  font-size: 10px !important;
+  line-height: 1.1;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,.45);
+}
+.stacked-gear-card {
+  border-color: rgba(250,204,21,.28);
+}
 .gear-icon {
   width: 28px;
   height: 28px;
@@ -1379,4 +1405,586 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 @media (max-width: 900px) {
   .phase-ready-topbar { width: 100%; border-radius: 14px; flex-wrap: wrap; }
   .ready-mini { max-width: 100%; white-space: normal; }
+}
+
+/* v3.6 lobby host controls and carryover stat layout polish */
+.player-row-hostable {
+  display: grid;
+  grid-template-columns: 12px minmax(110px, 1fr) minmax(92px, auto) auto;
+  align-items: center;
+}
+.player-row-hostable .player-name { margin-right: 0; }
+.player-team-label { color: #d6d3d1; font-weight: 900; white-space: nowrap; }
+.host-player-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(87,83,78,.55);
+}
+.host-player-controls select {
+  min-width: 150px;
+}
+.host-player-controls .btn {
+  padding: 7px 10px;
+  font-size: 11px;
+}
+.unit-buy-gear-layout > div {
+  min-width: 0;
+}
+.buy-owned-unit .unit-stat-summary {
+  grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
+  gap: 6px;
+}
+.buy-owned-unit .stat-tile {
+  min-width: 0;
+  text-align: center;
+  padding: 5px 4px;
+}
+.buy-owned-unit .stat-tile span {
+  font-size: 9px;
+  line-height: 1;
+}
+.buy-owned-unit .stat-tile b {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px;
+  white-space: nowrap;
+  line-height: 1.05;
+  font-size: 11px;
+}
+.buy-owned-unit .stat-tile em {
+  margin-left: 0;
+  font-size: 9px;
+}
+@media (max-width: 1500px) {
+  .unit-buy-gear-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 700px) {
+  .player-row-hostable {
+    grid-template-columns: 12px 1fr;
+  }
+  .player-team-label,
+  .player-row-hostable .pill {
+    grid-column: 2;
+  }
+  .host-player-controls {
+    justify-content: stretch;
+  }
+  .host-player-controls select,
+  .host-player-controls .btn {
+    flex: 1 1 140px;
+  }
+}
+
+/* v3.7 ready sidebar, NPCs, tighter board visuals */
+.board { gap: 1px; padding: 8px; border-radius: 14px; }
+.cell { border-radius: 0; min-height: 39px; }
+.unit-token-circle { width: 31px; height: 31px; border-width: 1px; }
+.unit-token-circle .unit-icon { max-width: 76%; max-height: 76%; }
+.teleport-ring { inset: -4px; }
+.ready-big-btn { width: 100%; min-height: 52px; font-size: 18px; border-radius: 16px; }
+.ready-list { max-height: 220px; overflow: auto; padding-right: 4px; }
+.ready-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.buy-overlay .owned-units { max-height: 70vh; }
+.buy-overlay .owned-card { grid-row: span 4; }
+.buy-overlay-v34 { grid-template-columns: minmax(540px, 1.15fr) minmax(330px,.65fr) minmax(420px,.9fr); }
+.buy-overlay-v34 .owned-card { grid-column: 3; grid-row: 1 / span 4; }
+.buy-overlay-v34 .loot-card { grid-column: 2; }
+.buy-overlay-v34 .card.compact:has(.ready-big-btn) { grid-column: 2; }
+.npc-list-box { display: grid; gap: 4px; border: 1px solid #57534e; border-radius: 12px; padding: 10px; background: rgba(12,10,9,.55); color: #d6d3d1; }
+.npc-list-box b { color: #fde68a; }
+.lobby-toggle-row { align-self: end; border: 1px solid #57534e; border-radius: 12px; padding: 11px; background: rgba(12,10,9,.55); }
+.cell .unit-token .unit-token-circle[title*='Goblin'], .unit-token-circle.npc-token { background-color: #f8fafc; }
+@media (max-width: 1320px) {
+  .buy-overlay-v34 { grid-template-columns: 1fr; }
+  .buy-overlay-v34 .owned-card, .buy-overlay-v34 .loot-card, .buy-overlay-v34 .card.compact:has(.ready-big-btn) { grid-column: auto; grid-row: auto; }
+}
+
+/* v3.8 lobby/NPC/team-mode/shop refinements */
+.lobby-grid-split {
+  grid-template-columns: minmax(280px, .75fr) minmax(520px, 1.25fr);
+  align-items: start;
+}
+.lobby-settings-card { min-height: 320px; }
+.settings-card-header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.compact-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.compact-tabs button { padding: 7px 10px; font-size: 12px; }
+.npc-settings-grid { align-items: stretch; }
+.wide-npc-box { grid-column: 1 / -1; }
+.collapsible-unit-card { padding: 0; overflow: hidden; }
+.collapsible-unit-summary { cursor: pointer; list-style: none; padding: 10px; }
+.collapsible-unit-summary::-webkit-details-marker { display: none; }
+.collapsible-unit-card[open] { padding-bottom: 10px; }
+.collapsible-unit-card > input,
+.collapsible-unit-card > .unit-buy-gear-layout { margin-left: 10px; margin-right: 10px; }
+.fight-gold-row { margin: 8px 0 0; border-top: 1px solid rgba(120,113,108,.45); padding-top: 8px; }
+@media (max-width: 1000px) {
+  .lobby-grid-split { grid-template-columns: 1fr; }
+}
+
+/* v3.9 polish */
+.connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 8px 0 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid #57534e;
+  font-weight: 1000;
+  color: #fef3c7;
+  background: rgba(12,10,9,.75);
+}
+.connection-banner.connected { border-color: rgba(34,197,94,.65); color: #bbf7d0; background: rgba(6,78,59,.25); }
+.connection-banner.missing { border-color: rgba(250,204,21,.65); color: #fde68a; background: rgba(113,63,18,.24); }
+.board { gap: 0; }
+.unit-token-circle { padding: 2px !important; }
+
+/* v3.10 gameplay update polish */
+.cell,
+.cell.own-cell,
+.cell.neutral-cell,
+.cell.void-cell {
+  border: 0 !important;
+  border-color: transparent !important;
+}
+
+.unit-token-circle.npc-token {
+  background-color: #ffffff !important;
+}
+
+.gear-icon-xs {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.ground-item-stack {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 22px;
+  min-height: 18px;
+  padding: 2px 3px;
+  border-radius: 6px;
+  background: rgba(12, 10, 9, .78);
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  pointer-events: none;
+}
+.ground-item-stack span {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 900;
+  color: #fef3c7;
+  text-shadow: 0 1px 2px #000;
+}
+
+.spawn-pentagram {
+  position: absolute;
+  inset: 5%;
+  z-index: 5;
+  width: 90%;
+  height: 90%;
+  object-fit: contain;
+  opacity: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 0 7px rgba(220,38,38,.85));
+  mix-blend-mode: screen;
+}
+.spawn-pending {
+  animation: spawnPulse 2.2s ease-in-out infinite;
+}
+.spawn-effect {
+  animation: spawnFlash 4.2s ease-in-out forwards;
+}
+@keyframes spawnPulse {
+  0%, 100% { opacity: .18; transform: scale(.78) rotate(-4deg); }
+  50% { opacity: .72; transform: scale(1.03) rotate(4deg); }
+}
+@keyframes spawnFlash {
+  0% { opacity: 0; transform: scale(.42) rotate(-12deg); }
+  18% { opacity: .92; transform: scale(1.04) rotate(0deg); }
+  68% { opacity: .58; transform: scale(.98) rotate(4deg); }
+  100% { opacity: 0; transform: scale(1.28) rotate(10deg); }
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 210px;
+  max-width: 320px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(250,204,21,.4);
+  background: rgba(28,25,23,.98);
+  color: #fef3c7;
+  box-shadow: 0 18px 55px rgba(0,0,0,.48);
+}
+.context-menu-title {
+  padding: 7px 9px 6px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #fde68a;
+  border-bottom: 1px solid rgba(250,204,21,.18);
+  margin-bottom: 4px;
+}
+.context-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: #f5f5f4;
+  background: transparent;
+  text-align: left;
+  font-weight: 800;
+  cursor: pointer;
+}
+.context-menu button:hover:not(:disabled) {
+  background: rgba(250,204,21,.13);
+}
+.context-menu button:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+}
+.context-menu-divider {
+  height: 1px;
+  background: rgba(250,204,21,.18);
+  margin: 4px 0;
+}
+.context-menu-icon { width: 18px; text-align: center; }
+
+.player-alliance-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgba(12,10,9,.38);
+  border: 1px solid rgba(250,204,21,.16);
+}
+.player-alliance-picker span {
+  font-size: 11px;
+  color: #d6d3d1;
+}
+.player-alliance-picker select {
+  min-width: 90px;
+  padding: 3px 5px;
+  font-size: 11px;
+}
+.team-alliance-chip {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #fef3c7;
+}
+.unit-info-dropzone {
+  border-color: rgba(34,197,94,.42) !important;
+}
+.unit-info-dropzone:hover {
+  box-shadow: 0 0 0 2px rgba(34,197,94,.18), 0 16px 35px rgba(0,0,0,.25);
+}
+
+/* v3.11 control/KOTH refinements */
+.lobby-grid-split {
+  grid-template-columns: minmax(220px, .55fr) minmax(620px, 1.45fr);
+}
+.player-row-hostable {
+  gap: 6px;
+}
+.player-row-hostable .player-name,
+.player-row-hostable .player-team-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.host-player-controls {
+  gap: 4px;
+}
+.host-player-controls button,
+.host-player-controls select {
+  font-size: 11px;
+  padding: 6px 7px;
+}
+.cell.hill-cell {
+  border: 2px solid #c084fc !important;
+  box-shadow: inset 0 0 0 1px rgba(168,85,247,.7), inset 0 0 18px rgba(126,34,206,.45), 0 0 10px rgba(168,85,247,.35);
+  z-index: 1;
+}
+.cell.build-hidden-cell {
+  opacity: 0;
+  pointer-events: none;
+}
+.inventory-drag-preview {
+  position: fixed;
+  left: -9999px;
+  top: -9999px;
+  z-index: 99999;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  padding: 7px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(250,204,21,.65);
+  background: rgba(28,25,23,.96);
+  color: #fef3c7;
+  box-shadow: 0 10px 28px rgba(0,0,0,.45);
+  font-size: 12px;
+  font-weight: 900;
+  pointer-events: none;
+}
+.inventory-drag-preview img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+.inventory-drag-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 1500px) {
+  .lobby-grid-split { grid-template-columns: minmax(210px, .65fr) minmax(500px, 1.35fr); }
+}
+.results-actions {
+  align-items: stretch;
+}
+.continue-roster-options {
+  display: grid;
+  gap: 6px;
+  min-width: 210px;
+  padding: 8px;
+  border: 1px solid rgba(250,204,21,.28);
+  border-radius: 12px;
+  background: rgba(12,10,9,.45);
+}
+.continue-roster-options label {
+  font-size: 12px;
+  font-weight: 800;
+}
+.continue-roster-options input[type="number"] {
+  width: 90px;
+  margin-left: 6px;
+}
+
+/* v3.13 resource loot, stacked inventory, and clearer spawn warnings */
+.cell {
+  overflow: visible;
+}
+.cell-content {
+  position: relative;
+  overflow: visible;
+  z-index: 1;
+}
+.spawn-pentagram {
+  inset: -24%;
+  z-index: 30;
+  width: 148%;
+  height: 148%;
+  opacity: .85;
+  filter: drop-shadow(0 0 9px rgba(239,68,68,.95)) drop-shadow(0 0 18px rgba(127,29,29,.9));
+  mix-blend-mode: normal;
+}
+.spawn-pending {
+  animation: spawnPulseV313 3.2s ease-in-out infinite;
+}
+.spawn-effect {
+  animation: spawnFlashV313 6.5s ease-in-out forwards;
+}
+@keyframes spawnPulseV313 {
+  0%, 100% { opacity: .2; transform: scale(.72) rotate(-8deg); }
+  45% { opacity: .96; transform: scale(1.08) rotate(3deg); }
+  70% { opacity: .55; transform: scale(.96) rotate(7deg); }
+}
+@keyframes spawnFlashV313 {
+  0% { opacity: .98; transform: scale(1.1) rotate(-10deg); }
+  42% { opacity: .92; transform: scale(1.18) rotate(3deg); }
+  72% { opacity: .55; transform: scale(1.0) rotate(9deg); }
+  100% { opacity: 0; transform: scale(.64) rotate(18deg); }
+}
+.inventory-slot {
+  position: relative;
+}
+.inventory-qty-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  min-width: 20px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: rgba(12, 10, 9, .92);
+  border: 1px solid rgba(250,204,21,.7);
+  color: #fde68a;
+  font-size: 10px;
+  font-weight: 1000;
+  line-height: 1.1;
+  text-shadow: none;
+}
+
+/* v3.14 NPC-only spawn markers and Hill Giant visuals */
+.spawn-pentagram {
+  inset: -40%;
+  z-index: 80;
+  width: 180%;
+  height: 180%;
+  opacity: .9;
+  pointer-events: none;
+  filter: drop-shadow(0 0 12px rgba(239,68,68,.98)) drop-shadow(0 0 26px rgba(127,29,29,.95));
+}
+.spawn-pending {
+  animation: spawnPulseV314 4.8s ease-in-out infinite;
+}
+.spawn-effect {
+  animation: spawnFlashV314 8s ease-in-out forwards;
+}
+@keyframes spawnPulseV314 {
+  0%, 100% { opacity: .18; transform: scale(.68) rotate(-10deg); }
+  35% { opacity: .98; transform: scale(1.16) rotate(2deg); }
+  65% { opacity: .58; transform: scale(.98) rotate(8deg); }
+}
+@keyframes spawnFlashV314 {
+  0% { opacity: .98; transform: scale(1.15) rotate(-12deg); }
+  35% { opacity: .92; transform: scale(1.24) rotate(2deg); }
+  70% { opacity: .48; transform: scale(1.02) rotate(10deg); }
+  100% { opacity: 0; transform: scale(.58) rotate(20deg); }
+}
+.unit-token.unit-size-2 {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 200%;
+  height: 200%;
+  z-index: 16;
+  justify-content: center;
+  pointer-events: none;
+}
+.unit-token.unit-size-2 .unit-token-circle {
+  width: 82px;
+  height: 82px;
+  border-radius: 18px;
+  background-color: rgba(255,255,255,.96) !important;
+  box-shadow: 0 8px 28px rgba(0,0,0,.72), 0 0 18px rgba(250,204,21,.22);
+}
+.unit-token.unit-size-2 .unit-token-circle .unit-icon {
+  width: 76px;
+  height: 76px;
+  max-width: 92%;
+  max-height: 92%;
+  object-fit: contain;
+}
+.unit-token.unit-size-2 .unit-name {
+  max-width: 104px;
+  font-size: 10px;
+  z-index: 18;
+}
+.unit-token.unit-size-2 .hpbar {
+  display: block;
+  width: 92px;
+  height: 6px;
+  z-index: 18;
+}
+
+
+/* v3.15 NPC spawn timing/settings cleanup */
+.npc-config-card {
+  gap: 7px;
+}
+.npc-inline-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+.npc-inline-controls label {
+  min-width: 0;
+}
+.spawn-pending {
+  animation: spawnFadeInV315 10s ease-in forwards;
+}
+.spawn-effect {
+  animation: spawnFadeOutV315 4s ease-out forwards;
+}
+@keyframes spawnFadeInV315 {
+  0% { opacity: 0; transform: scale(.58) rotate(-12deg); }
+  45% { opacity: .72; transform: scale(.98) rotate(-3deg); }
+  100% { opacity: .96; transform: scale(1.18) rotate(4deg); }
+}
+@keyframes spawnFadeOutV315 {
+  0% { opacity: .98; transform: scale(1.2) rotate(4deg); }
+  100% { opacity: 0; transform: scale(.72) rotate(18deg); }
+}
+.unit-token.npc-unit .hpbar {
+  display: none !important;
+}
+
+/* v3.16 arena layout and board pan/zoom */
+.team-select {
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+.board-wrap {
+  overflow: hidden;
+  border-radius: 16px;
+  touch-action: none;
+  cursor: default;
+}
+.board-wrap.is-panning,
+.board-wrap:active {
+  cursor: grabbing;
+}
+.board-pan-scene {
+  position: relative;
+  transform-origin: center center;
+  will-change: transform;
+}
+.board-view-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 120;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid rgba(250,204,21,.35);
+  border-radius: 999px;
+  background: rgba(12,10,9,.82);
+  color: #fef3c7;
+  font-size: 11px;
+  font-weight: 900;
+  box-shadow: 0 10px 28px rgba(0,0,0,.35);
+  pointer-events: auto;
+}
+.board-view-controls button {
+  border: 1px solid rgba(120,113,108,.75);
+  border-radius: 999px;
+  background: rgba(28,25,23,.95);
+  color: #f5f5f4;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 1px 7px;
+  font-weight: 1000;
+}
+.board-view-controls small {
+  color: #a8a29e;
+  font-weight: 800;
+}
+@media (max-width: 900px) {
+  .board-view-controls small { display: none; }
 }

@@ -89,3 +89,52 @@ Push to `main`. The included GitHub Actions workflow builds and deploys to GitHu
 - Manual skiller targeting can now select matching Trees/Rocks in any zone, including your own team zone.
 - Added Home teleport for selected units: channels for 5 seconds, returns the unit to its base, restores the unit's previous orders, and is interrupted by incoming attacks.
 - Selected unit target preview now highlights Home teleport destinations and still highlights manual/auto resource targets.
+
+
+## v3.7.1
+
+- Ready buttons moved into phase side panels with larger player-ready cards.
+- Added Cape of Skulls to the gear shop.
+- Added optional NPC spawns setting and Goblin NPC center spawns.
+- Goblins drop 1-10 gold, Bronze Med Helm, or Bones. Bones can be dragged onto units for Prayer XP.
+- Board gap reduced, tiles are square, and unit health rings are thinner.
+- Team Target label cleaned up.
+
+
+## v3.7.1
+
+- Goblin loot now always gives Bones, plus a separate roll for either gold or Bronze Med Helm.
+
+## v3.8.1 notes
+
+- Lobby settings now use tabs: Match Settings, NPC List, and Custom Effects.
+- Added Team Mode toggle. First pass teams are Red+Green vs Blue+Purple for 4P, Red+Green vs Blue for 3P, and normal Red vs Blue for 2P.
+- NPC list now has a Goblin spawn amount setting. Goblins spawn near center on the 1-minute wave up to the configured amount.
+- Added per-unit target option: Closest NPC.
+- Buy Phase unit cards are collapsible and show equipment-aware max hit.
+- Fight phase Your Units section shows current gold.
+- Loot awarded during fights is explicitly preserved into the team Loot tab.
+
+
+## v3.8.1
+
+- Fixed Firebase presence loop that could cause React maximum update depth errors after joining lobbies.
+- Presence writes are now throttled with a heartbeat instead of retriggering on every lobby snapshot.
+
+
+## v3.9
+- Thinner unit health rings.
+- Team/color labels now show player names when slots are filled.
+- NPC loot inventory sync fixes for the fight Loot tab.
+- Configurable NPC spawn rate in the NPC List tab.
+- Build Phase shows your center connection status.
+- Cape of Skulls is unlimited shop stock while player-sold items remain limited market stock.
+
+## v3.16 arena test build
+
+- Experimental support for 5–8 active player slots.
+- 8-player layout uses 3 bases on the top row, 2 in the middle row, and 3 on the bottom row.
+- 5+ player games automatically use at least a 30x30 arena and 5x5 base zones.
+- Added new player colors: Orange, Yellow, Pink, and Cyan.
+- Added board pan/zoom controls: scroll wheel zooms, middle mouse drag pans, and Reset restores the default view.
+- Source zip intentionally omits package-lock.json so local installs use your normal npm registry.
