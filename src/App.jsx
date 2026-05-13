@@ -18,11 +18,11 @@ import "./styles.css";
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
+const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, centerSize: 5, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
 const BASE_ZONE_SIZE = 3;
 const LARGE_BASE_ZONE_SIZE = 5;
 const BASE_ZONE_INSET = 1;
-const CENTER_RADIUS = 2;
+const CENTER_SIZE_OPTIONS = [3, 5, 7];
 const TICK_SECONDS = 0.6;
 const FIGHT_TICK_MS = Math.round(TICK_SECONDS * 1000);
 const MOVE_EVERY = 0.75;
@@ -96,7 +96,7 @@ const SHOP_GEAR_ITEM_IDS = ["cape_of_skulls"];
 const DEFAULT_TWO_HANDED_STYLES = new Set(["dinhs_bulwark", "noxious_halberd", "dragon_claws", "dharoks", "heavy_ballista", "dark_bow_pure"]);
 const RESOURCE_HITPOINTS = { tree: 30, rock: 30 };
 const CLASSIC_TEAMS = ["red", "green", "blue", "purple"];
-const EIGHT_PLAYER_TEAMS = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "cyan"];
+const EIGHT_PLAYER_TEAMS = ["red", "yellow", "cyan", "purple", "green", "blue", "orange", "pink"];
 const ALL_TEAMS = Array.from(new Set([...CLASSIC_TEAMS, ...EIGHT_PLAYER_TEAMS]));
 const TEAM_ORDER = Object.fromEntries(ALL_TEAMS.map((team, index) => [team, index]));
 const TEAM_MODE_ALLIANCES = [
@@ -537,6 +537,15 @@ function baseZoneSizeFor(setup) {
   return sizeOf(setup || DEFAULT_SETUP) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE;
 }
 
+function centerSizeFor(sizeOrSetup = DEFAULT_SETUP) {
+  const explicit = typeof sizeOrSetup === "number" ? Number(DEFAULT_SETUP.centerSize) : Number(sizeOrSetup?.centerSize);
+  return CENTER_SIZE_OPTIONS.includes(explicit) ? explicit : DEFAULT_SETUP.centerSize;
+}
+
+function centerRadiusFor(sizeOrSetup = DEFAULT_SETUP) {
+  return Math.floor(centerSizeFor(sizeOrSetup) / 2);
+}
+
 function eightPlayerBasePositions(size, zone) {
   const inset = Math.min(Math.floor(zone / 2), Math.max(0, Math.floor((size - 1) / 2)));
   const far = size - 1 - inset;
@@ -601,22 +610,26 @@ function isInBaseZone(row, col, team, sizeOrSetup) {
   return row >= b.r0 && row <= b.r1 && col >= b.c0 && col <= b.c1;
 }
 
-function isCenterCell(row, col, size) {
+function isCenterCell(row, col, sizeOrSetup = DEFAULT_SETUP) {
+  const size = typeof sizeOrSetup === "number" ? sizeOrSetup : sizeOf(sizeOrSetup);
+  const radius = centerRadiusFor(sizeOrSetup);
   const mid = midOf(size);
-  return Math.abs(row - mid) <= CENTER_RADIUS && Math.abs(col - mid) <= CENTER_RADIUS;
+  return Math.abs(row - mid) <= radius && Math.abs(col - mid) <= radius;
 }
 
-function centerTiles(size) {
+function centerTiles(sizeOrSetup = DEFAULT_SETUP) {
+  const size = typeof sizeOrSetup === "number" ? sizeOrSetup : sizeOf(sizeOrSetup);
+  const radius = centerRadiusFor(sizeOrSetup);
   const mid = midOf(size);
   const out = [];
-  for (let row = mid - CENTER_RADIUS; row <= mid + CENTER_RADIUS; row++) {
-    for (let col = mid - CENTER_RADIUS; col <= mid + CENTER_RADIUS; col++) out.push({ row, col });
+  for (let row = mid - radius; row <= mid + radius; row++) {
+    for (let col = mid - radius; col <= mid + radius; col++) out.push({ row, col });
   }
   return out;
 }
 
 function isHillCell(row, col, setup = DEFAULT_SETUP) {
-  return isCenterCell(row, col, sizeOf(setup));
+  return isCenterCell(row, col, setup);
 }
 
 function hillCenter(setup = DEFAULT_SETUP) {
@@ -645,7 +658,7 @@ function hillOccupants(units, setup = DEFAULT_SETUP) {
 function findHillPath(board, units, unit, setup) {
   if (isHillCell(unit.row, unit.col, setup)) return null;
   const size = sizeOf(setup);
-  const candidates = centerTiles(size)
+  const candidates = centerTiles(setup)
     .filter((tile) => walkable(board[tile.row]?.[tile.col], setup))
     .map((tile) => {
       const occupied = unitOccupies(units, tile.row, tile.col, setup, unit);
@@ -695,7 +708,7 @@ function ownerFor(row, col, setup) {
   const size = sizeOf(setup);
   const teams = activeTeams(setup);
   const mid = midOf(size);
-  if (isCenterCell(row, col, size)) return "neutral";
+  if (isCenterCell(row, col, setup)) return "neutral";
   if (usesArenaLayout(setup)) {
     for (const team of teams) {
       if (isInBaseZone(row, col, team, setup)) return team;
@@ -746,7 +759,7 @@ function ownerFor(row, col, setup) {
 
 function isStarterRoad(row, col, setup) {
   const size = sizeOf(setup);
-  if (isCenterCell(row, col, size)) return true;
+  if (isCenterCell(row, col, setup)) return true;
   return activeTeams(setup).some((team) => isInBaseZone(row, col, team, setup));
 }
 
@@ -756,7 +769,7 @@ function applyMapTemplate(board, setup) {
   const mid = midOf(size);
   const safeSet = (row, col, type) => {
     if (!inBounds(row, col, size)) return;
-    if (isCenterCell(row, col, size) || isBaseCell(row, col, setup) || isStarterRoad(row, col, setup)) return;
+    if (isCenterCell(row, col, setup) || isBaseCell(row, col, setup) || isStarterRoad(row, col, setup)) return;
     if (board[row][col].owner === "void") return;
     board[row][col].type = type;
   };
@@ -775,17 +788,29 @@ function applyMapTemplate(board, setup) {
     }
   }
   if (template === "fortress_mid") {
-    for (let r = mid - 3; r <= mid + 3; r++) {
-      for (let c = mid - 3; c <= mid + 3; c++) {
-        const border = r === mid - 3 || r === mid + 3 || c === mid - 3 || c === mid + 3;
-        const gate = (r === mid && (c === mid - 3 || c === mid + 3)) || (c === mid && (r === mid - 3 || r === mid + 3));
-        if (border && !gate) safeSet(r, c, "wall");
+    const radius = centerRadiusFor(setup);
+    const ring = Math.min(Math.max(radius + 2, 3), Math.max(3, mid - 1));
+    const gateHalf = usesArenaLayout(setup) ? 1 : 0;
+    const gateCenters = [{ row: mid, col: mid - ring }, { row: mid, col: mid + ring }, { row: mid - ring, col: mid }, { row: mid + ring, col: mid }];
+    if (usesArenaLayout(setup)) {
+      for (const team of activeTeams(setup)) {
+        const base = baseOf(team, setup);
+        const dr = Math.sign(base.row - mid);
+        const dc = Math.sign(base.col - mid);
+        gateCenters.push({ row: mid + dr * ring, col: mid + dc * ring });
+      }
+    }
+    const isGate = (r, c) => gateCenters.some((gate) => Math.abs(r - gate.row) <= gateHalf && Math.abs(c - gate.col) <= gateHalf);
+    for (let r = mid - ring; r <= mid + ring; r++) {
+      for (let c = mid - ring; c <= mid + ring; c++) {
+        const border = r === mid - ring || r === mid + ring || c === mid - ring || c === mid + ring;
+        if (border && !isGate(r, c)) safeSet(r, c, "wall");
       }
     }
   }
   if (template === "open_field") {
     for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) {
-      if (!isCenterCell(r, c, size) && !isBaseCell(r, c, setup) && !isStarterRoad(r, c, setup) && board[r][c].owner !== "void") board[r][c].type = "road";
+      if (!isCenterCell(r, c, setup) && !isBaseCell(r, c, setup) && !isStarterRoad(r, c, setup) && board[r][c].owner !== "void") board[r][c].type = "road";
     }
   }
   return board;
@@ -795,7 +820,7 @@ function applyOuterTreeWall(board, setup) {
   const size = sizeOf(setup);
   for (let i = 0; i < size; i++) {
     for (const [row, col] of [[0, i], [size - 1, i], [i, 0], [i, size - 1]]) {
-      if (!inBounds(row, col, size) || isBaseCell(row, col, setup) || isCenterCell(row, col, size)) continue;
+      if (!inBounds(row, col, size) || isBaseCell(row, col, setup) || isCenterCell(row, col, setup)) continue;
       const cell = board[row][col];
       if (!cell) continue;
       cell.type = "tree";
@@ -827,7 +852,7 @@ function finalizeBuildTerrain(board, setup = DEFAULT_SETUP) {
   const size = sizeOf(setup);
   return cloneBoard(board).map((row) => row.map((cell) => {
     if (!cell || cell.type !== "empty") return cell;
-    if (isBaseCell(cell.row, cell.col, setup) || isCenterCell(cell.row, cell.col, size)) return cell;
+    if (isBaseCell(cell.row, cell.col, setup) || isCenterCell(cell.row, cell.col, setup)) return cell;
     const picked = choices[Math.floor(Math.random() * choices.length)] || "water";
     return {
       ...cell,
@@ -1143,6 +1168,7 @@ function makeInitialGame(setup = DEFAULT_SETUP) {
     maxUnits: Number(setup.maxUnits) || DEFAULT_SETUP.maxUnits,
     baseHp: Number(setup.baseHp) || DEFAULT_SETUP.baseHp,
     baseZoneSize: Number(setup.baseZoneSize) || (safeGridSize >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE),
+    centerSize: CENTER_SIZE_OPTIONS.includes(Number(setup.centerSize)) ? Number(setup.centerSize) : DEFAULT_SETUP.centerSize,
     matchTimeLimit: Number(setup.matchTimeLimit) || DEFAULT_SETUP.matchTimeLimit,
     gameMode: setup.gameMode || DEFAULT_SETUP.gameMode,
     mapTemplate: setup.mapTemplate || DEFAULT_SETUP.mapTemplate,
@@ -1636,7 +1662,7 @@ function hasPath(board, start, end, setup) {
 }
 
 function teamConnectedToCenter(board, team, setup) {
-  return centerTiles(sizeOf(setup)).some((tile) => hasPath(board, baseOf(team, setup), tile, setup));
+  return centerTiles(setup).some((tile) => hasPath(board, baseOf(team, setup), tile, setup));
 }
 
 function allTeamsConnectedToCenter(board, setup) {
@@ -2670,14 +2696,19 @@ function runDevTests() {
   const setup3 = { ...DEFAULT_SETUP, players: 3, gridSize: 17 };
   console.assert(JSON.stringify(activeTeams(setup3)) === JSON.stringify(["red", "green", "blue"]), "3-player setup should activate red, green, and blue teams");
   const setup8 = { ...DEFAULT_SETUP, players: 8, gridSize: 30, baseZoneSize: 5 };
-  console.assert(activeTeams(setup8).length === 8 && activeTeams(setup8).includes("cyan"), "8-player setup should activate all arena slots");
+  console.assert(JSON.stringify(activeTeams({ ...setup8, players: 5 })) === JSON.stringify(["red", "yellow", "cyan", "purple", "green"]), "5-player arena should fill the four corners first, then middle-left");
+  console.assert(JSON.stringify(activeTeams(setup8)) === JSON.stringify(["red", "yellow", "cyan", "purple", "green", "blue", "orange", "pink"]), "8-player arena should fill corners, side middles, then top/bottom middles");
   console.assert(baseOf("orange", setup8).row === 2 && baseOf("orange", setup8).col === 15, "Orange should use the top-center base in 8-player arena layout");
   console.assert(baseOf("pink", setup8).row === 27 && baseOf("pink", setup8).col === 15, "Pink should use the bottom-center base in 8-player arena layout");
   console.assert(ownerFor(15, 2, setup8) === "green", "8-player arena should assign middle-left zone to Green");
-  console.assert(centerTiles(30).length === 25, "Center tiles should expand to a 5x5 middle area");
+  console.assert(centerTiles(30).length === 25, "Default middle should be 5x5");
+  console.assert(centerTiles({ ...setup8, centerSize: 3 }).length === 9, "Middle size setting should support 3x3");
+  console.assert(centerTiles({ ...setup8, centerSize: 7 }).length === 49, "Middle size setting should support 7x7");
   const setup5 = { ...DEFAULT_SETUP, players: 5, gridSize: 30, baseZoneSize: 5 };
-  const touchesCenter = (team) => centerTiles(sizeOf(setup5)).some((tile) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dr, dc]) => inBounds(tile.row + dr, tile.col + dc, sizeOf(setup5)) && ownerFor(tile.row + dr, tile.col + dc, setup5) === team));
-  console.assert(activeTeams(setup5).every(touchesCenter), "Every 5-player arena build zone should border the center so teams can build a path in");
+  const touchesCenter = (team, setup = setup5) => centerTiles(setup).some((tile) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dr, dc]) => inBounds(tile.row + dr, tile.col + dc, sizeOf(setup)) && ownerFor(tile.row + dr, tile.col + dc, setup) === team));
+  console.assert(activeTeams(setup5).every((team) => touchesCenter(team, setup5)), "Every 5-player arena build zone should border the center so teams can build a path in");
+  const setup5LargeMiddle = { ...setup5, centerSize: 7 };
+  console.assert(activeTeams(setup5LargeMiddle).every((team) => touchesCenter(team, setup5LargeMiddle)), "Every 5-player arena build zone should border a 7x7 center too");
   console.assert(baseOf("blue", 17).row === 15 && baseOf("blue", 17).col === 15, "3-player blue base should use the bottom-right starter patch");
   console.assert(ownerFor(15, 1, setup3) === "void", "3-player mode should make the fourth bottom-left zone void/unbuildable");
   const board3 = makeBoard(setup3);
@@ -3575,6 +3606,14 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
                 </select>
               </label>
               <label>
+                Middle section
+                <select disabled={!isHost} value={centerSizeFor(lobby.setup)} onChange={(e) => onUpdateSetup({ centerSize: Number(e.target.value) })}>
+                  <option value={3}>3x3 middle</option>
+                  <option value={5}>5x5 middle</option>
+                  <option value={7}>7x7 middle</option>
+                </select>
+              </label>
+              <label>
                 Starting gold
                 <input disabled={!isHost} type="number" value={lobby.setup.startingGold} onChange={(e) => onUpdateSetup({ startingGold: Number(e.target.value) })} />
               </label>
@@ -3961,7 +4000,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const cellGroundItems = groundItemsByCell.get(key(cell.row, cell.col)) || [];
           const spawnIndicators = spawnIndicatorsByCell.get(key(cell.row, cell.col)) || [];
           const buildLimited = lobby.phase === "build";
-          const buildVisible = !buildLimited || !activeTeam || cell.owner === activeTeam || isCenterCell(cell.row, cell.col, size);
+          const buildVisible = !buildLimited || !activeTeam || cell.owner === activeTeam || isCenterCell(cell.row, cell.col, setup);
           const buildHidden = buildLimited && !buildVisible;
           const fogged = !buildHidden && isBuildFogged(cell, activeTeam, lobby.phase, setup);
           const visibleType = buildHidden || fogged ? "empty" : cell.type;
@@ -5256,6 +5295,7 @@ export default function QuadrantsOnline() {
       if (!Object.prototype.hasOwnProperty.call(patch, "baseZoneSize")) nextSetup.baseZoneSize = LARGE_BASE_ZONE_SIZE;
     }
     if (Object.prototype.hasOwnProperty.call(patch, "gridSize") && !Object.prototype.hasOwnProperty.call(patch, "baseZoneSize")) nextSetup.baseZoneSize = Number(nextSetup.gridSize) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE;
+    nextSetup.centerSize = CENTER_SIZE_OPTIONS.includes(Number(nextSetup.centerSize)) ? Number(nextSetup.centerSize) : DEFAULT_SETUP.centerSize;
     nextSetup.alliances = normalizeTeamAlliances(nextSetup);
     const game = makeInitialGame(nextSetup);
     const teams = activeTeams(nextSetup);
@@ -5457,7 +5497,7 @@ export default function QuadrantsOnline() {
     if (selectedTool.kind === "inspect") return;
     const team = player.team;
     const cell = game.board[row][col];
-    if (isCenterCell(row, col, sizeOf(game.setup))) return;
+    if (isCenterCell(row, col, game.setup)) return;
     if (cell.owner !== team) return;
     if (isBaseCell(row, col, game.setup)) return;
     const gold = game.gold?.[team] ?? 0;
