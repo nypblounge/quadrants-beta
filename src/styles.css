@@ -1999,3 +1999,15 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 @media (max-width: 900px) {
   .board-view-controls small { display: none; }
 }
+
+/* v3.18 viewport scroll lock and large-map interaction polish */
+.board-wrap,
+.board-wrap.large-board {
+  overscroll-behavior: contain;
+}
+.board-wrap.large-board {
+  user-select: none;
+}
+.board-pan-scene {
+  backface-visibility: hidden;
+}

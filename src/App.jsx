@@ -24,6 +24,7 @@ const LARGE_BASE_ZONE_SIZE = 5;
 const BASE_ZONE_INSET = 1;
 const CENTER_RADIUS = 2;
 const TICK_SECONDS = 0.6;
+const FIGHT_TICK_MS = Math.round(TICK_SECONDS * 1000);
 const MOVE_EVERY = 0.75;
 const RESPAWN_BASE_TIME = 5;
 const SPLAT_TTL = 2.4;
@@ -1120,6 +1121,15 @@ function makeUnit(id, team, style, setup, carried = {}) {
   };
 }
 
+function staggerUnitsForFightStart(unitsInput) {
+  const units = Array.isArray(unitsInput) ? unitsInput : arrayFromObject(unitsInput);
+  return objectFromArray(units.map((unit, index) => ({
+    ...unit,
+    moveTimer: Math.max(Number(unit.moveTimer ?? 0), (index % 8) * (MOVE_EVERY / 8)),
+    cooldown: Math.max(0, Number(unit.cooldown ?? 0)),
+  })));
+}
+
 function makeInitialGame(setup = DEFAULT_SETUP) {
   const playerCount = clampPlayerCount(setup?.players);
   const requestedGridSize = Number(setup.gridSize) || DEFAULT_SETUP.gridSize;
@@ -2165,6 +2175,7 @@ function damageResourceTile(board, target, resourceType, damage, fightTime) {
 }
 
 function processResourceRegrowth(board, units, setup, fightTime) {
+  let dirty = false;
   const occupied = new Set();
   for (const unit of units.filter((u) => u.hp > 0)) {
     for (const cell of unitFootprint(unit)) occupied.add(key(cell.row, cell.col));
@@ -2176,6 +2187,7 @@ function processResourceRegrowth(board, units, setup, fightTime) {
       if (!cell.regrowType || !(fightTime >= Number(cell.regrowAt ?? Infinity))) continue;
       if (occupied.has(key(row, col)) || isBaseCell(row, col, setup)) {
         cell.regrowAt = fightTime + 1;
+        dirty = true;
         continue;
       }
       cell.type = cell.regrowType;
@@ -2183,8 +2195,10 @@ function processResourceRegrowth(board, units, setup, fightTime) {
       delete cell.regrowAt;
       delete cell.resourceHp;
       delete cell.resourceMaxHp;
+      dirty = true;
     }
   }
+  return dirty;
 }
 
 function targetForUnit(unit, game, bases, units, respawnQueue) {
@@ -2293,6 +2307,8 @@ function stepGame(game, dt) {
   const gold = { ...(game.gold || makeGold(setup)) };
   const isCaptureFlag = setup.gameMode === "capture_flag";
   const isKingHill = setup.gameMode === "king_hill";
+  let boardDirty = false;
+  const combatTeamsAtTickStart = teamsWithCombatPresence(bases, units, respawnQueue, setup);
 
   const fightTime = (game.fightTime || 0) + dt;
   groundItems = groundItems.filter((item) => Number(item.expiresAt ?? 0) > fightTime);
@@ -2301,7 +2317,7 @@ function stepGame(game, dt) {
   killFeed = spawnedNpcState.killFeed;
   logEntries = spawnedNpcState.logEntries;
   effects = spawnedNpcState.effects;
-  processResourceRegrowth(board, units, setup, fightTime);
+  boardDirty = processResourceRegrowth(board, units, setup, fightTime) || boardDirty;
   const strandedRespawns = respawnQueue.filter((r) => (bases[r.team]?.hp ?? 0) <= 0);
   if (strandedRespawns.length) {
     unitArchive = mergeUnitArchive(unitArchive, strandedRespawns.map((r) => ({ ...r, hp: 0, timer: null, carryingFlagTeam: null })));
@@ -2367,7 +2383,7 @@ function stepGame(game, dt) {
 
   for (const unit of units) {
     if (unit.hp <= 0) continue;
-    const combatTeams = teamsWithCombatPresence(bases, units, respawnQueue, setup);
+    const combatTeams = combatTeamsAtTickStart;
     unit.maxHpSeen = Math.max(unit.maxHpSeen ?? 0, maxHp(unit));
     const flagCarrierTarget = unit.team === "npc" ? null : (isCaptureFlag ? enemyFlagCarrierForTeam(units, unit.team, combatTeams, setup) : null);
     const manual = manualTargetForUnit(unit, board, units, setup, groundItems);
@@ -2537,6 +2553,7 @@ function stepGame(game, dt) {
     if (resourceTarget && unit.cooldown <= 0 && manhattan(unit, resourceTarget) <= 1 && board[resourceTarget.row]?.[resourceTarget.col]?.type === resourceType) {
       const resourceHit = damageResourceTile(board, resourceTarget, resourceType, resourceDamageForUnit(unit, resourceType), fightTime);
       if (resourceHit.ok) {
+        boardDirty = true;
         const action = resourceType === "tree" ? "chopped" : "mined";
         addSplat(resourceTarget, resourceHit.damage, unit.team, unit.style, `-${resourceHit.damage}`);
         addEffect(unit, resourceTarget, unit.team, unit.style);
@@ -2632,6 +2649,7 @@ function stepGame(game, dt) {
     nextNpcSpawnAt: game.nextNpcSpawnAt,
     nextNpcSpawnAtByStyle: game.nextNpcSpawnAtByStyle || {},
     log: logEntries,
+    _boardDirty: boardDirty,
   };
 
   const aliveBases = aliveTeamsFromBases(bases, setup);
@@ -3883,6 +3901,20 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     });
   };
   useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return undefined;
+    const onWheel = (e) => {
+      if (!largeBoard) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = wrap.getBoundingClientRect();
+      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      setZoom(view.zoom * (e.deltaY > 0 ? 0.9 : 1.1), anchor);
+    };
+    wrap.addEventListener("wheel", onWheel, { passive: false });
+    return () => wrap.removeEventListener("wheel", onWheel);
+  }, [largeBoard, view.zoom]);
+  useEffect(() => {
     const onMove = (e) => {
       if (!panRef.current) return;
       const start = panRef.current;
@@ -3901,12 +3933,6 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     <div
       ref={wrapRef}
       className={`board-wrap ${largeBoard ? "large-board" : ""} ${panRef.current ? "is-panning" : ""}`}
-      onWheel={(e) => {
-        e.preventDefault();
-        const rect = e.currentTarget.getBoundingClientRect();
-        const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        setZoom(view.zoom * (e.deltaY > 0 ? 0.9 : 1.1), anchor);
-      }}
       onMouseDown={(e) => {
         if (e.button !== 1) return;
         e.preventDefault();
@@ -5046,7 +5072,7 @@ export default function QuadrantsOnline() {
         });
         return;
       }
-      const nextGame = stepGame(latest.game, 0.5);
+      const nextGame = stepGame(latest.game, TICK_SECONDS);
       if (nextGame.finished) {
         const results = nextGame.results || summarizeResults(nextGame, "last combat presence");
         await update(ref(db, `lobbies/${lobbyCode}`), {
@@ -5073,11 +5099,10 @@ export default function QuadrantsOnline() {
           "game/log": [`Fight ended: ${results.winner || "Draw"}.`, ...(nextGame.log || [])].slice(0, 8),
         });
       } else {
-        await update(ref(db, `lobbies/${lobbyCode}/game`), {
+        const gamePatch = {
           units: nextGame.units,
           respawnQueue: nextGame.respawnQueue,
           unitArchive: nextGame.unitArchive,
-          board: nextGame.board,
           bases: nextGame.bases,
           ctfScores: nextGame.ctfScores,
           kothScores: nextGame.kothScores,
@@ -5092,9 +5117,11 @@ export default function QuadrantsOnline() {
           groundItems: nextGame.groundItems,
           fightTime: nextGame.fightTime,
           log: nextGame.log,
-        });
+        };
+        if (nextGame._boardDirty) gamePatch.board = nextGame.board;
+        await update(ref(db, `lobbies/${lobbyCode}/game`), gamePatch);
       }
-    }, 500);
+    }, FIGHT_TICK_MS);
     return () => clearInterval(interval);
   }, [lobby?.phase, lobby?.hostId, lobbyCode, playerId, isHost]);
 
@@ -5397,6 +5424,7 @@ export default function QuadrantsOnline() {
       "game/effects": {},
       "game/kothScores": Object.fromEntries(activeTeams(lobby.game.setup).map((team) => [team, 0])),
       "game/kothController": null,
+      "game/units": staggerUnitsForFightStart(units),
       voteEnd: {},
       "game/log": [`${GAME_MODES[lobby.game.setup.gameMode || "classic"]?.name || "Fight"} started. Host browser simulates combat; host migration continues if host disconnects.`, ...(lobby.game.log || [])].slice(0, 8),
     });
