@@ -1791,13 +1791,28 @@ function unitOccupies(units, row, col, setup, movingUnit = null) {
   });
 }
 
+function occupiedCellSetFor(units, setup, movingUnit = null) {
+  const occupied = new Set();
+  for (const u of units) {
+    if (u.hp <= 0 || u.id === movingUnit?.id) continue;
+    if (movingUnit?.carryingFlagTeam && u.team === movingUnit.team) continue;
+    for (const cell of unitFootprint(u)) {
+      if (!isBaseCell(cell.row, cell.col, setup)) occupied.add(key(cell.row, cell.col));
+    }
+  }
+  return occupied;
+}
+
 function canUnitStandAt(board, units, unit, row, col, setup, options = {}) {
   const ignoreOccupied = Boolean(options.ignoreOccupied);
+  const occupiedSet = options.occupiedSet || null;
   const size = sizeOf(setup);
   for (const cell of unitFootprintAt(unit, row, col)) {
     if (!inBounds(cell.row, cell.col, size)) return false;
     if (!walkable(board[cell.row]?.[cell.col], setup)) return false;
-    if (!ignoreOccupied && unitOccupies(units, cell.row, cell.col, setup, unit)) return false;
+    if (!ignoreOccupied) {
+      if (occupiedSet ? occupiedSet.has(key(cell.row, cell.col)) : unitOccupies(units, cell.row, cell.col, setup, unit)) return false;
+    }
   }
   return true;
 }
@@ -1808,13 +1823,15 @@ function findPath(board, units, unit, target, setup, options = {}) {
   const avoidOccupied = options.avoidOccupied ?? true;
   const allowTargetCell = options.allowTargetCell ?? false;
   const requireGoal = options.requireGoal ?? false;
+  const occupiedSet = avoidOccupied ? occupiedCellSetFor(units, setup, unit) : null;
   const start = { row: unit.row, col: unit.col };
   const queue = [{ ...start, path: [] }];
   const seen = new Set([key(start.row, start.col)]);
   const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
   let best = null;
-  while (queue.length) {
-    const cur = queue.shift();
+  let qi = 0;
+  while (qi < queue.length) {
+    const cur = queue[qi++];
     const probe = { ...unit, row: cur.row, col: cur.col };
     const dist = unitDistance(probe, target);
     const clearTarget = nearestTargetCell(cur, target);
@@ -1825,7 +1842,7 @@ function findPath(board, units, unit, target, setup, options = {}) {
       const nc = cur.col + dc;
       const isTargetCell = nr === target.row && nc === target.col;
       if (!inBounds(nr, nc, size) || seen.has(key(nr, nc)) || (!allowTargetCell && isTargetCell)) continue;
-      const canStand = canUnitStandAt(board, units, unit, nr, nc, setup, { ignoreOccupied: !avoidOccupied || (isTargetCell && allowTargetCell) });
+      const canStand = canUnitStandAt(board, units, unit, nr, nc, setup, { ignoreOccupied: !avoidOccupied || (isTargetCell && allowTargetCell), occupiedSet });
       if (!canStand) continue;
       seen.add(key(nr, nc));
       queue.push({ row: nr, col: nc, path: [...cur.path, { row: nr, col: nc }] });
@@ -1837,6 +1854,7 @@ function findPath(board, units, unit, target, setup, options = {}) {
 
 function bestOpenForwardStep(board, units, unit, target, setup) {
   const size = sizeOf(setup);
+  const occupiedSet = occupiedCellSetFor(units, setup, unit);
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   const currentDistance = unitDistance(unit, target);
   let best = null;
@@ -1845,7 +1863,7 @@ function bestOpenForwardStep(board, units, unit, target, setup) {
     const nr = unit.row + dr;
     const nc = unit.col + dc;
     if (!inBounds(nr, nc, size) || (nr === target.row && nc === target.col)) continue;
-    if (!canUnitStandAt(board, units, unit, nr, nc, setup)) continue;
+    if (!canUnitStandAt(board, units, unit, nr, nc, setup, { occupiedSet })) continue;
     const distance = unitDistance({ ...unit, row: nr, col: nc }, target);
     if (distance < currentDistance && (!best || distance < best.distance)) best = { row: nr, col: nc, distance };
     if (distance === currentDistance && !sideStep) sideStep = { row: nr, col: nc, distance };
@@ -2994,7 +3012,7 @@ function HpBar({ hp, max }) {
   );
 }
 
-function UnitToken({ unit, bump, showName = true }) {
+function UnitTokenView({ unit, bump, showName = true }) {
   const hpPct = Math.max(0, Math.min(100, ((unit.hp ?? 0) / Math.max(1, maxHp(unit))) * 100));
   const teleporting = unit.targetOverride === "homeTeleport" && unit.homeTeleportStartedAt != null;
   const teleportPct = teleporting ? Math.max(0, Math.min(100, 100 * (1 - Math.max(0, HOME_TELEPORT_SECONDS - ((unit.currentFightTime ?? 0) - unit.homeTeleportStartedAt)) / HOME_TELEPORT_SECONDS))) : 0;
@@ -3016,6 +3034,26 @@ function UnitToken({ unit, bump, showName = true }) {
     </div>
   );
 }
+
+const UnitToken = React.memo(UnitTokenView, (prev, next) => {
+  const a = prev.unit;
+  const b = next.unit;
+  const aTeleporting = a.targetOverride === "homeTeleport" && a.homeTeleportStartedAt != null;
+  const bTeleporting = b.targetOverride === "homeTeleport" && b.homeTeleportStartedAt != null;
+  return prev.bump === next.bump
+    && prev.showName === next.showName
+    && a.id === b.id
+    && a.row === b.row
+    && a.col === b.col
+    && a.hp === b.hp
+    && a.style === b.style
+    && a.name === b.name
+    && a.team === b.team
+    && a.carryingFlagTeam === b.carryingFlagTeam
+    && a.targetOverride === b.targetOverride
+    && a.homeTeleportStartedAt === b.homeTeleportStartedAt
+    && (!aTeleporting && !bTeleporting || Math.floor(Number(a.currentFightTime || 0) * 4) === Math.floor(Number(b.currentFightTime || 0) * 4));
+});
 
 function previewMaxHit(styleId) {
   const unit = makeUnit("preview", "red", styleId, DEFAULT_SETUP);

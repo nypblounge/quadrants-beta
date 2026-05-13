@@ -2011,3 +2011,27 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .board-pan-scene {
   backface-visibility: hidden;
 }
+
+/* v3.20 visual/performance polish */
+.unit-token.unit-size-2 .unit-token-circle {
+  border-radius: 999px !important;
+  overflow: visible;
+}
+.board-wrap.large-board {
+  contain: layout paint style;
+}
+.board-pan-scene {
+  transform-origin: 0 0;
+  will-change: transform;
+  contain: layout paint style;
+}
+.board .cell {
+  contain: layout paint style;
+}
+.unit-token,
+.projectiles,
+.spawn-pentagram,
+.ground-item-stack,
+.splat {
+  will-change: transform, opacity;
+}
