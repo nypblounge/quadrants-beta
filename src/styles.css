@@ -34,6 +34,8 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .home-actions, .join-box { display: grid; gap: 12px; margin-top: 18px; }
 .join-box { grid-template-columns: 1fr auto; align-items: end; }
 .status-line { margin-top: 14px; color: #fca5a5; font-weight: 800; }
+.cleanup-hint { margin: -4px 0 0; color: #a8a29e; font-size: 12px; line-height: 1.35; }
+.cleanup-status-line { margin-top: 10px; color: #bbf7d0; font-weight: 800; }
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -2025,9 +2027,6 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   will-change: transform;
   contain: layout paint style;
 }
-.board .cell {
-  contain: layout paint style;
-}
 .unit-token,
 .projectiles,
 .spawn-pentagram,
@@ -2037,4 +2036,35 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 }
 .middle-section-control select {
   border-color: rgba(250, 204, 21, .55);
+}
+
+/* v3.23: keep paint containment off cells so 2x2 NPC tokens can spill across all four occupied tiles. */
+.board .cell {
+  contain: layout style;
+  overflow: visible;
+}
+.board .cell-content {
+  overflow: visible;
+}
+.unit-token.unit-size-2 {
+  width: 200%;
+  height: 200%;
+  overflow: visible;
+}
+.unit-token.unit-size-2 .unit-token-circle {
+  border-radius: 50% !important;
+  aspect-ratio: 1 / 1;
+}
+
+/* v3.26: render 2x2 NPC anchors above neighboring cells and lock outer tree wall from build edits. */
+.board .cell.large-unit-anchor-cell {
+  z-index: 120 !important;
+  overflow: visible !important;
+}
+.board .cell.large-unit-anchor-cell .cell-content {
+  z-index: 121;
+  overflow: visible !important;
+}
+.board .cell.large-unit-anchor-cell .unit-token.unit-size-2 {
+  z-index: 122;
 }

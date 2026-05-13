@@ -11,6 +11,10 @@ import {
   get,
   remove,
   serverTimestamp,
+  query,
+  orderByChild,
+  endAt,
+  limitToFirst,
 } from "firebase/database";
 import { firebaseConfig } from "./firebaseConfig";
 import "./styles.css";
@@ -31,6 +35,11 @@ const SPLAT_TTL = 2.4;
 const SPAWN_EFFECT_TTL = 8.0;
 const SPAWN_WARNING_SECONDS = 10.0;
 const GROUND_ITEM_TTL = 60;
+const STALE_LOBBY_CLEANUP_HOURS = 24;
+const RESULTS_LOBBY_CLEANUP_HOURS = 6;
+const LOBBY_CLEANUP_THROTTLE_MS = 5 * 60 * 1000;
+const RECENT_PRESENCE_GRACE_MS = 2 * 60 * 1000;
+const LOBBY_CLEANUP_BATCH_LIMIT = 50;
 const MAX_LEVEL = 99;
 const BUILD_PHASE_GOLD_RESERVE = 10;
 const DEFEND_RADIUS = 4;
@@ -377,6 +386,22 @@ const STYLE = {
     baseStats: { magic: 75, defence: 75, hitpoints: 75 },
   },
 };
+
+const DEFAULT_UNIT_STYLE_ID = "melee";
+
+function safeStyleId(styleId, fallback = DEFAULT_UNIT_STYLE_ID) {
+  return STYLE[styleId] ? styleId : fallback;
+}
+
+function styleDefinition(styleId, fallback = DEFAULT_UNIT_STYLE_ID) {
+  return STYLE[styleId] || STYLE[fallback] || {};
+}
+
+function normalizeRuntimeUnit(unit) {
+  if (!unit) return unit;
+  const safeStyle = safeStyleId(unit.style);
+  return unit.style === safeStyle ? unit : { ...unit, style: safeStyle, name: normalizeUnitName(unit.name, styleDefinition(safeStyle).name || "Unit") };
+}
 
 const MINION_STYLE_IDS = [
   "melee",
@@ -816,6 +841,13 @@ function applyMapTemplate(board, setup) {
   return board;
 }
 
+function isOuterTreeWallCell(row, col, cell, setup) {
+  const size = sizeOf(setup);
+  if (!(row === 0 || col === 0 || row === size - 1 || col === size - 1)) return false;
+  if (isBaseCell(row, col, setup) || isCenterCell(row, col, setup)) return false;
+  return cell?.outerTreeWall === true || cell?.type === "tree";
+}
+
 function applyOuterTreeWall(board, setup) {
   const size = sizeOf(setup);
   for (let i = 0; i < size; i++) {
@@ -824,6 +856,7 @@ function applyOuterTreeWall(board, setup) {
       const cell = board[row][col];
       if (!cell) continue;
       cell.type = "tree";
+      cell.outerTreeWall = true;
       cell.resourceDeathCount = cell.resourceDeathCount ?? 0;
       cell.resourceHp = null;
       cell.resourceMaxHp = null;
@@ -944,7 +977,7 @@ function xpRequiredForNext(level) {
 }
 
 function makeStats(styleId) {
-  const base = STYLE[styleId].baseStats;
+  const base = styleDefinition(styleId).baseStats || STYLE[DEFAULT_UNIT_STYLE_ID].baseStats;
   return Object.fromEntries(STAT_KEYS.map((stat) => [stat, { level: base[stat] ?? 1, xp: 0 }]));
 }
 
@@ -972,7 +1005,7 @@ function grantXp(unit, stat, amount) {
 }
 
 function combatType(styleId) {
-  return STYLE[styleId]?.combatType ?? "melee";
+  return styleDefinition(styleId).combatType ?? "melee";
 }
 
 function damageTypeClass(styleId) {
@@ -983,19 +1016,19 @@ function damageTypeClass(styleId) {
 }
 
 function effectiveAttackStyleId(unit) {
-  return unit?.carryingFlagTeam ? "flag_weapon" : unit?.style;
+  return unit?.carryingFlagTeam ? "flag_weapon" : safeStyleId(unit?.style);
 }
 
 function unitAttackRange(unit) {
-  return STYLE[effectiveAttackStyleId(unit)]?.range ?? STYLE[unit?.style]?.range ?? 1;
+  return styleDefinition(effectiveAttackStyleId(unit)).range ?? styleDefinition(unit?.style).range ?? 1;
 }
 
 function unitAttackCooldown(unit) {
-  return STYLE[effectiveAttackStyleId(unit)]?.cooldown ?? STYLE[unit?.style]?.cooldown ?? TICK_SECONDS;
+  return styleDefinition(effectiveAttackStyleId(unit)).cooldown ?? styleDefinition(unit?.style).cooldown ?? TICK_SECONDS;
 }
 
 function unitAttackTicks(unit) {
-  return STYLE[effectiveAttackStyleId(unit)]?.attackTicks ?? STYLE[unit?.style]?.attackTicks ?? 1;
+  return styleDefinition(effectiveAttackStyleId(unit)).attackTicks ?? styleDefinition(unit?.style).attackTicks ?? 1;
 }
 
 function unitSize(unitOrStyle) {
@@ -1084,12 +1117,13 @@ function resourceOrderType(unit, orderedTarget) {
 }
 
 function makeUnit(id, team, style, setup, carried = {}) {
-  const stats = carried.stats ? JSON.parse(JSON.stringify(carried.stats)) : makeStats(style);
+  const safeStyle = safeStyleId(style);
+  const stats = carried.stats ? JSON.parse(JSON.stringify(carried.stats)) : makeStats(safeStyle);
   const base = baseOf(team, setup);
   return {
     id,
     team,
-    style,
+    style: safeStyle,
     stats,
     hp: carried.hp ?? stats.hitpoints.level,
     row: carried.row ?? base.row,
@@ -1101,14 +1135,14 @@ function makeUnit(id, team, style, setup, carried = {}) {
     lastAttackerId: carried.lastAttackerId ?? null,
     randomTarget: carried.randomTarget ?? null,
     clawCharge: carried.clawCharge ?? 0,
-    voidwakerGuaranteesLeft: carried.voidwakerGuaranteesLeft ?? (STYLE[style]?.guaranteedAttacks ?? 0),
+    voidwakerGuaranteesLeft: carried.voidwakerGuaranteesLeft ?? (styleDefinition(safeStyle).guaranteedAttacks ?? 0),
     deathCount: carried.deathCount ?? 0,
     totalDamage: carried.totalDamage ?? 0,
     kills: carried.kills ?? 0,
     levelsGained: carried.levelsGained ?? 0,
-    name: normalizeUnitName(carried.name, STYLE[style]?.name || "Unit"),
+    name: normalizeUnitName(carried.name, styleDefinition(safeStyle).name || "Unit"),
     priority: carried.priority ?? "auto",
-    targetOverride: carried.targetOverride ?? defaultUnitTargetOverride(style),
+    targetOverride: carried.targetOverride ?? defaultUnitTargetOverride(safeStyle),
     manualTargetType: carried.manualTargetType ?? null,
     manualTargetUnitId: carried.manualTargetUnitId ?? null,
     manualTargetRow: carried.manualTargetRow ?? null,
@@ -1707,43 +1741,46 @@ function advantage(attackerStyle, defenderStyle) {
 }
 
 function rollAttack(attacker, defenderStyle, defenderStats) {
-  const effectiveStyle = effectiveAttackStyleId(attacker);
-  const style = STYLE[effectiveStyle];
+  const safeAttacker = normalizeRuntimeUnit(attacker) || attacker;
+  const effectiveStyle = effectiveAttackStyleId(safeAttacker);
+  const style = styleDefinition(effectiveStyle);
   const adv = advantage(effectiveStyle, defenderStyle);
-  const offense = attacker.carryingFlagTeam
-    ? statLevel(attacker, "attack") + (FLAG_WEAPON_BONUS.attack ?? 0) + gearAttackBonusFor(attacker, "melee")
-    : statLevel(attacker, offensiveStat(attacker.style)) + gearAttackBonusFor(attacker, attacker.style);
+  const offense = safeAttacker.carryingFlagTeam
+    ? statLevel(safeAttacker, "attack") + (FLAG_WEAPON_BONUS.attack ?? 0) + gearAttackBonusFor(safeAttacker, "melee")
+    : statLevel(safeAttacker, offensiveStat(safeAttacker.style)) + gearAttackBonusFor(safeAttacker, safeAttacker.style);
   const defenderUnit = defenderStats?.stats ? defenderStats : { stats: defenderStats };
   const defence = (defenderUnit.stats?.defence?.level ?? 1) + gearDefenceBonusFor(defenderUnit, effectiveStyle);
   let chance = 0.55 + (offense - defence) / 190;
   if (adv === 1) chance += 0.1;
   if (adv === -1) chance -= 0.1;
-  if (!attacker.carryingFlagTeam && attacker.style === "ancient_staff" && defenderStyle && combatType(defenderStyle) === "range") chance -= style.accuracyPenaltyVsRange ?? 0;
+  if (!safeAttacker.carryingFlagTeam && safeAttacker.style === "ancient_staff" && defenderStyle && combatType(defenderStyle) === "range") chance -= style.accuracyPenaltyVsRange ?? 0;
   chance = Math.max(0.05, Math.min(0.92, chance));
   return Math.random() <= chance;
 }
 
 function maxDamageRoll(attacker, defenderStyle) {
-  const effectiveStyle = effectiveAttackStyleId(attacker);
-  const style = STYLE[effectiveStyle];
+  const safeAttacker = normalizeRuntimeUnit(attacker) || attacker;
+  const effectiveStyle = effectiveAttackStyleId(safeAttacker);
+  const style = styleDefinition(effectiveStyle);
   const adv = advantage(effectiveStyle, defenderStyle);
-  const level = attacker.carryingFlagTeam
-    ? statLevel(attacker, "strength") + (FLAG_WEAPON_BONUS.strength ?? 0) + gearStrengthBonusFor(attacker, "melee")
-    : statLevel(attacker, damageStat(attacker.style)) + gearStrengthBonusFor(attacker, attacker.style);
+  const level = safeAttacker.carryingFlagTeam
+    ? statLevel(safeAttacker, "strength") + (FLAG_WEAPON_BONUS.strength ?? 0) + gearStrengthBonusFor(safeAttacker, "melee")
+    : statLevel(safeAttacker, damageStat(safeAttacker.style)) + gearStrengthBonusFor(safeAttacker, safeAttacker.style);
   let maxHit = Math.max(1, Math.floor(style.baseDamage * (0.65 + level / 100)));
   if (adv === 1) maxHit = Math.ceil(maxHit * 1.1);
   if (adv === -1) maxHit = Math.max(1, Math.floor(maxHit * 0.9));
-  if (!attacker.carryingFlagTeam && style.dharokHpScale) {
-    const seenMaxHp = Math.max(maxHp(attacker), attacker.maxHpSeen ?? 0);
-    const missingHp = Math.max(0, seenMaxHp - Math.max(0, attacker.hp ?? 0));
+  if (!safeAttacker.carryingFlagTeam && style.dharokHpScale) {
+    const seenMaxHp = Math.max(maxHp(safeAttacker), safeAttacker.maxHpSeen ?? 0);
+    const missingHp = Math.max(0, seenMaxHp - Math.max(0, safeAttacker.hp ?? 0));
     maxHit += Math.floor(missingHp / 5);
   }
   return maxHit;
 }
 
 function rollDamage(attacker, defenderStyle) {
-  const style = STYLE[attacker.style];
-  const maxHit = maxDamageRoll(attacker, defenderStyle);
+  const safeAttacker = normalizeRuntimeUnit(attacker) || attacker;
+  const style = styleDefinition(safeAttacker?.style);
+  const maxHit = maxDamageRoll(safeAttacker, defenderStyle);
   let damage = 1 + Math.floor(Math.random() * maxHit);
   if (style.volatileChance && Math.random() < style.volatileChance) damage *= style.volatileMultiplier ?? 3;
   return damage;
@@ -1905,7 +1942,7 @@ function enemyThreatNearUnit(board, units, protectedUnit, escortUnit, combatTeam
   const candidates = units
     .filter((target) => areHostileTeams(protectedUnit.team, target.team, setup) && target.hp > 0 && combatTeams.includes(target.team))
     .map((target) => {
-      const targetRange = STYLE[target.style]?.range ?? 1;
+      const targetRange = unitAttackRange(target);
       const canHitCarrier = canAttack(board, target, protectedUnit, targetRange, setup);
       const carrierDist = unitDistance(target, protectedUnit);
       const escortDist = escortUnit ? unitDistance(target, escortUnit) : carrierDist;
@@ -1968,7 +2005,7 @@ function attackUnit(attacker, target) {
     const roll = resolveUnitHit(attacker, target);
     return { total: roll.damage ?? 0, rolls: [roll], special: "flag_weapon" };
   }
-  const style = STYLE[attacker.style] || {};
+  const style = styleDefinition(attacker.style);
 
   if (attacker.style === "voidwaker_rusher" && (attacker.voidwakerGuaranteesLeft ?? 0) > 0) {
     attacker.voidwakerGuaranteesLeft = Math.max(0, (attacker.voidwakerGuaranteesLeft ?? 0) - 1);
@@ -2032,7 +2069,7 @@ function defendTargetForUnit(board, units, unit, setup, combatTeams, bases) {
   const candidates = units
     .filter((target) => areHostileTeams(unit.team, target.team, setup) && target.hp > 0 && combatTeams.includes(target.team))
     .map((target) => {
-      const targetRange = STYLE[target.style]?.range ?? 1;
+      const targetRange = unitAttackRange(target);
       const attackingBase = canAttack(board, target, ownBase, targetRange, setup);
       const baseDistance = unitDistance(target, ownBase);
       return { target, attackingBase, baseDistance, hp: target.hp };
@@ -2106,16 +2143,16 @@ function manualTargetForUnit(unit, board, units, setup, groundItems = {}) {
   }
   if (unit.manualTargetType === "follow") {
     const target = units.find((u) => u.id === unit.manualTargetUnitId && u.hp > 0 && u.id !== unit.id && !areHostileTeams(unit.team, u.team, setup));
-    if (!target) return { kind: "expired", reason: "follow target gone" };
+    if (!target) return { kind: "followPending", targetId: unit.manualTargetUnitId };
     return { kind: "follow", target };
   }
-  if (unit.manualTargetType === "tile") {
+  if (unit.manualTargetType === "tile" || unit.manualTargetType === "hold") {
     const row = Number(unit.manualTargetRow);
     const col = Number(unit.manualTargetCol);
     if (!Number.isFinite(row) || !Number.isFinite(col) || !inBounds(row, col, sizeOf(setup)) || !canUnitStandAt(board, units, unit, row, col, setup, { ignoreOccupied: unit.row === row && unit.col === col })) {
-      return { kind: "expired", reason: "tile blocked" };
+      return { kind: "expired", reason: unit.manualTargetType === "hold" ? "hold tile blocked" : "tile blocked" };
     }
-    return { kind: "tile", target: { row, col } };
+    return { kind: unit.manualTargetType === "hold" ? "hold" : "tile", target: { row, col } };
   }
   if (unit.manualTargetType === "resource") {
     const row = Number(unit.manualTargetRow);
@@ -2216,6 +2253,32 @@ function damageResourceTile(board, target, resourceType, damage, fightTime) {
     return { ok: true, damage: dealt, cleared: true, hp: 0, maxHp: max, deathCount: cleared.deathCount, regrowSeconds: cleared.regrowSeconds, regrowAt: cleared.regrowAt };
   }
   return { ok: true, damage: dealt, cleared: false, hp: nextHp, maxHp: max, deathCount: cell.resourceDeathCount ?? 0, regrowSeconds: 0, regrowAt: null };
+}
+
+function adjacentManualResourceBlocker(board, unit, finalTarget, resourceType, setup) {
+  if (!board || !unit || !finalTarget || !resourceType) return null;
+  const size = sizeOf(setup);
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const seen = new Set();
+  const candidates = [];
+  for (const foot of unitFootprint(unit)) {
+    for (const [dr, dc] of dirs) {
+      const row = foot.row + dr;
+      const col = foot.col + dc;
+      const k = key(row, col);
+      if (seen.has(k) || !inBounds(row, col, size)) continue;
+      seen.add(k);
+      const cell = board[row]?.[col];
+      if (!cell || cell.type !== resourceType) continue;
+      const distToFinal = manhattan({ row, col }, finalTarget);
+      const distFromUnitToFinal = unitDistance(unit, finalTarget);
+      const clearsTowardTarget = distToFinal < distFromUnitToFinal ? 0 : 1;
+      candidates.push({ row, col, distToFinal, clearsTowardTarget, hp: resourceCurrentHp(cell, resourceType) });
+    }
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => a.clearsTowardTarget - b.clearsTowardTarget || a.distToFinal - b.distToFinal || a.hp - b.hp || a.row - b.row || a.col - b.col);
+  return { row: candidates[0].row, col: candidates[0].col };
 }
 
 function processResourceRegrowth(board, units, setup, fightTime) {
@@ -2328,14 +2391,14 @@ function stepSimulation(game, dt) {
 function stepGame(game, dt) {
   const setup = game.setup;
   const board = cloneBoard(game.board);
-  let units = arrayFromObject(game.units).map((u) => ({
+  let units = arrayFromObject(game.units).map((u) => normalizeRuntimeUnit({
     ...u,
     stats: JSON.parse(JSON.stringify(u.stats)),
     freezeTimer: Math.max(0, (u.freezeTimer ?? 0) - dt),
     freezeImmuneTimer: Math.max(0, (u.freezeImmuneTimer ?? 0) - dt),
   }));
   const bases = JSON.parse(JSON.stringify(game.bases || {}));
-  let respawnQueue = arrayFromObject(game.respawnQueue).map((r) => ({
+  let respawnQueue = arrayFromObject(game.respawnQueue).map((r) => normalizeRuntimeUnit({
     ...r,
     stats: JSON.parse(JSON.stringify(r.stats)),
     timer: (r.timer ?? 0) - dt,
@@ -2376,7 +2439,7 @@ function stepGame(game, dt) {
       col: undefined,
       cooldown: 0,
       moveTimer: 0,
-      voidwakerGuaranteesLeft: STYLE[respawn.style]?.guaranteedAttacks ?? respawn.voidwakerGuaranteesLeft,
+      voidwakerGuaranteesLeft: styleDefinition(respawn.style).guaranteedAttacks ?? respawn.voidwakerGuaranteesLeft,
       carryingFlagTeam: null,
     });
     units.push(spawnedUnit);
@@ -2437,13 +2500,15 @@ function stepGame(game, dt) {
     let manualResourceType = !flagCarrierTarget && manual.kind === "resource" ? manual.resourceType : null;
     let manualResourceTarget = !flagCarrierTarget && manual.kind === "resource" ? manual.target : null;
     let manualFollowTarget = !flagCarrierTarget && manual.kind === "follow" ? manual.target : null;
+    let manualFollowPending = !flagCarrierTarget && manual.kind === "followPending";
+    let manualHoldTarget = !flagCarrierTarget && manual.kind === "hold" ? manual.target : null;
     let manualGroundItem = !flagCarrierTarget && manual.kind === "groundItem" ? manual.item : null;
     let manualGroundItemTarget = manualGroundItem ? manual.target : null;
     if (manualTileTarget && unit.row === manualTileTarget.row && unit.col === manualTileTarget.col) {
       clearManualTarget(unit);
       manualTileTarget = null;
     }
-    const manualActive = Boolean(manualUnitTarget || manualTileTarget || manualResourceTarget || manualFollowTarget || manualGroundItemTarget);
+    const manualActive = Boolean(manualUnitTarget || manualTileTarget || manualResourceTarget || manualFollowTarget || manualFollowPending || manualHoldTarget || manualGroundItemTarget);
     const orderedTarget = unit.team === "npc" ? "blank" : effectiveTargetOrder(unit, game);
     const closestNpcTarget = !flagCarrierTarget && !manualActive && orderedTarget === "closestNpc" ? nearestEnemyUnit(units, unit, ["npc"], setup) : null;
     const defendTarget = !flagCarrierTarget && !manualActive && orderedTarget === "defend" ? defendTargetForUnit(board, units, unit, setup, combatTeams, bases) : null;
@@ -2521,31 +2586,43 @@ function stepGame(game, dt) {
     const range = unitAttackRange(unit);
     unit.cooldown = Math.max(0, unit.cooldown - dt);
     unit.moveTimer = Math.max(0, unit.moveTimer - dt);
-    const isInteractingResource = Boolean(resourceTarget && resourceType && manhattan(unit, resourceTarget) <= 1 && board[resourceTarget.row]?.[resourceTarget.col]?.type === resourceType);
-
     let nearbyEnemyUnit = closestEnemyUnitInRange(board, units, unit, setup, combatTeams);
     const manualAttackTarget = manualUnitTarget && canAttack(board, unit, manualUnitTarget, range, setup) ? manualUnitTarget : null;
     const aggroTarget = units.find((u) => u.id === unit.lastAttackerId && u.hp > 0 && areHostileTeams(unit.team, u.team, setup));
-    const chaseTarget = flagCarrierTarget ?? manualUnitTarget ?? closestNpcTarget ?? defendTarget ?? protectTarget ?? cleanupTarget ?? (aggroTarget && !nearbyEnemyUnit ? aggroTarget : null);
+    const chaseTarget = flagCarrierTarget ?? manualUnitTarget ?? closestNpcTarget ?? defendTarget ?? protectTarget ?? cleanupTarget ?? (!manualHoldTarget && aggroTarget && !nearbyEnemyUnit ? aggroTarget : null);
     const escortTarget = supportFlagCarrier && !chaseTarget ? supportFlagCarrier : null;
 
     let manualPath = null;
     let manualBlocked = false;
+    let manualResourceBlockedByResource = null;
     if (manualTileTarget) {
       const targetOccupied = unitOccupies(units, manualTileTarget.row, manualTileTarget.col, setup, unit);
       manualPath = findPath(board, units, unit, manualTileTarget, setup, { range: targetOccupied ? 1 : 0, allowTargetCell: !targetOccupied, requireGoal: true });
+      if (!manualPath) manualPath = findPath(board, units, unit, manualTileTarget, setup, { range: targetOccupied ? 1 : 0, allowTargetCell: !targetOccupied });
       manualBlocked = !manualPath || (targetOccupied && manhattan(unit, manualTileTarget) <= 1);
     } else if (manualResourceTarget) {
-      manualPath = findPath(board, units, unit, manualResourceTarget, setup, { range: 1, requireGoal: true });
-      manualBlocked = !manualPath && manhattan(unit, manualResourceTarget) > 1;
+      const directResourcePath = findPath(board, units, unit, manualResourceTarget, setup, { range: 1, requireGoal: true });
+      manualPath = directResourcePath ?? findPath(board, units, unit, manualResourceTarget, setup, { range: 1 });
+      manualResourceBlockedByResource = !directResourcePath ? adjacentManualResourceBlocker(board, unit, manualResourceTarget, resourceType, setup) : null;
+      manualBlocked = !manualPath && !manualResourceBlockedByResource && manhattan(unit, manualResourceTarget) > 1;
     } else if (manualGroundItemTarget) {
       manualPath = findPath(board, units, unit, manualGroundItemTarget, setup, { range: 0, allowTargetCell: true, requireGoal: true });
+      if (!manualPath) manualPath = findPath(board, units, unit, manualGroundItemTarget, setup, { range: 0, allowTargetCell: true });
       manualBlocked = !manualPath && !(unit.row === manualGroundItemTarget.row && unit.col === manualGroundItemTarget.col);
     } else if (manualFollowTarget) {
       manualPath = findPath(board, units, unit, manualFollowTarget, setup, { range: 1, requireGoal: true });
+      if (!manualPath) manualPath = findPath(board, units, unit, manualFollowTarget, setup, { range: 1 });
       manualBlocked = !manualPath && manhattan(unit, manualFollowTarget) > 1;
+    } else if (manualHoldTarget) {
+      const atHoldTile = unit.row === manualHoldTarget.row && unit.col === manualHoldTarget.col;
+      if (!atHoldTile) {
+        manualPath = findPath(board, units, unit, manualHoldTarget, setup, { range: 0, allowTargetCell: true, requireGoal: true });
+        if (!manualPath) manualPath = findPath(board, units, unit, manualHoldTarget, setup, { range: 0, allowTargetCell: true });
+        manualBlocked = !manualPath;
+      }
     } else if (manualUnitTarget && !manualAttackTarget) {
       manualPath = findPath(board, units, unit, manualUnitTarget, setup, { range, requireGoal: true });
+      if (!manualPath) manualPath = findPath(board, units, unit, manualUnitTarget, setup, { range });
       manualBlocked = !manualPath;
     }
     if (manualActive) {
@@ -2558,6 +2635,8 @@ function stepGame(game, dt) {
           manualResourceTarget = null;
           manualResourceType = null;
           manualFollowTarget = null;
+          manualFollowPending = false;
+          manualHoldTarget = null;
           manualGroundItem = null;
           manualGroundItemTarget = null;
         }
@@ -2565,6 +2644,12 @@ function stepGame(game, dt) {
         delete unit.manualTargetBlockedSince;
       }
     }
+
+    let resourceWorkTarget = resourceTarget;
+    if (manualResourceTarget && manualResourceBlockedByResource && !(manhattan(unit, manualResourceTarget) <= 1 && board[manualResourceTarget.row]?.[manualResourceTarget.col]?.type === resourceType)) {
+      resourceWorkTarget = manualResourceBlockedByResource;
+    }
+    const isInteractingResource = Boolean(resourceWorkTarget && resourceType && manhattan(unit, resourceWorkTarget) <= 1 && board[resourceWorkTarget.row]?.[resourceWorkTarget.col]?.type === resourceType);
 
     if (!isInteractingResource && unit.moveTimer <= 0 && (unit.freezeTimer ?? 0) <= 0) {
       const flagPath = flagReturnTarget ? findPath(board, units, unit, flagReturnTarget, setup, { range: 0, allowTargetCell: true }) : null;
@@ -2576,7 +2661,7 @@ function stepGame(game, dt) {
       const basePath = !flagReturnTarget && !manualActive && !escortTarget && !resourceTarget && enemyBase
         ? findPath(board, units, unit, enemyBase, setup, { range: baseApproachRange }) ?? findPath(board, units, unit, enemyBase, setup, { range: baseApproachRange, avoidOccupied: false })
         : null;
-      const fallbackTarget = flagReturnTarget ?? manualTileTarget ?? manualGroundItemTarget ?? manualFollowTarget ?? chaseTarget ?? escortTarget ?? resourceTarget ?? hillTarget ?? enemyBase;
+      const fallbackTarget = flagReturnTarget ?? manualTileTarget ?? manualHoldTarget ?? manualGroundItemTarget ?? manualFollowTarget ?? chaseTarget ?? escortTarget ?? resourceTarget ?? hillTarget ?? enemyBase;
       const next = flagPath?.[0] ?? manualPath?.[0] ?? chasePath?.[0] ?? escortPath?.[0] ?? resourcePath?.[0] ?? hillPath?.[0] ?? basePath?.[0] ?? (fallbackTarget ? bestOpenForwardStep(board, units, unit, fallbackTarget, setup) : null);
       if (next && !unitOccupies(units, next.row, next.col, setup, unit)) {
         unit.row = next.row;
@@ -2594,22 +2679,23 @@ function stepGame(game, dt) {
       logEntries = [`${TEAM_META[unit.team].name} grabbed ${TEAM_META[targetTeam].name}'s flag.`, ...logEntries].slice(0, 8);
     }
 
-    if (resourceTarget && unit.cooldown <= 0 && manhattan(unit, resourceTarget) <= 1 && board[resourceTarget.row]?.[resourceTarget.col]?.type === resourceType) {
-      const resourceHit = damageResourceTile(board, resourceTarget, resourceType, resourceDamageForUnit(unit, resourceType), fightTime);
+    if (resourceWorkTarget && unit.cooldown <= 0 && manhattan(unit, resourceWorkTarget) <= 1 && board[resourceWorkTarget.row]?.[resourceWorkTarget.col]?.type === resourceType) {
+      const resourceHit = damageResourceTile(board, resourceWorkTarget, resourceType, resourceDamageForUnit(unit, resourceType), fightTime);
       if (resourceHit.ok) {
         boardDirty = true;
         const action = resourceType === "tree" ? "chopped" : "mined";
-        addSplat(resourceTarget, resourceHit.damage, unit.team, unit.style, `-${resourceHit.damage}`);
-        addEffect(unit, resourceTarget, unit.team, unit.style);
+        addSplat(resourceWorkTarget, resourceHit.damage, unit.team, unit.style, `-${resourceHit.damage}`);
+        addEffect(unit, resourceWorkTarget, unit.team, unit.style);
         if (resourceHit.cleared) {
           unit.resourcesCleared = (unit.resourcesCleared ?? 0) + 1;
           const resourceItemId = resourceType === "tree" ? "logs" : "ore";
           const resourceItem = itemById(resourceItemId);
           const lootedResource = addInventoryEntryToTeam(game, unit.team, { itemId: resourceItemId });
-          if (manualResourceTarget) clearManualTarget(unit);
+          const clearedManualFinalResource = Boolean(manualResourceTarget && resourceWorkTarget.row === manualResourceTarget.row && resourceWorkTarget.col === manualResourceTarget.col);
+          if (clearedManualFinalResource) clearManualTarget(unit);
           killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.name} ${action} ${resourceType === "tree" ? "trees" : "rocks"} and ${lootedResource ? `collected ${resourceItem?.name || resourceItemId}` : `lost ${resourceItem?.name || resourceItemId}; inventory full`}. Clear #${resourceHit.deathCount}. Regrows in ${resourceHit.regrowSeconds}s.`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
         }
-        unit.cooldown = STYLE[unit.style].cooldown;
+        unit.cooldown = unitAttackCooldown(unit);
         continue;
       }
     }
@@ -2627,7 +2713,7 @@ function stepGame(game, dt) {
       }
       addAttackSplats(nearbyEnemyUnit, attackResult, unit.team, effectiveAttackStyleId(unit));
       addEffect(unit, nearbyEnemyUnit, unit.team, effectiveAttackStyleId(unit));
-      if (STYLE[unit.style].aoeRadius && attackResultTotal(attackResult) > 0) {
+      if (styleDefinition(unit.style).aoeRadius && attackResultTotal(attackResult) > 0) {
         for (let row = nearbyEnemyUnit.row - 1; row <= nearbyEnemyUnit.row + 1; row++) {
           for (let col = nearbyEnemyUnit.col - 1; col <= nearbyEnemyUnit.col + 1; col++) {
             if (!inBounds(row, col, sizeOf(setup)) || (row === nearbyEnemyUnit.row && col === nearbyEnemyUnit.col)) continue;
@@ -3028,7 +3114,7 @@ function UnitTokenView({ unit, bump, showName = true }) {
         {teleporting && <div className="teleport-ring" style={{ background: `conic-gradient(#c084fc 0 ${teleportPct}%, transparent ${teleportPct}% 100%)` }} />}
         {unit.carryingFlagTeam && <div className="flag-icon-overlay" title={`Carrying ${TEAM_META[unit.carryingFlagTeam]?.name || "enemy"} flag`}>🚩</div>}
       </div>
-      {showName && <div className="unit-name">{String(unit.name || STYLE[unit.style].name).slice(0, 12)}</div>}
+      {showName && <div className="unit-name">{String(unit.name || styleDefinition(unit.style).name || "Unit").slice(0, 12)}</div>}
       {unit.carryingFlagTeam && <div className="flag-carrier">{TEAM_META[unit.carryingFlagTeam]?.name} flag</div>}
       <HpBar hp={unit.hp} max={maxHp(unit)} />
     </div>
@@ -3061,7 +3147,7 @@ function previewMaxHit(styleId) {
 }
 
 function attackSpeedLabel(styleId) {
-  const s = STYLE[styleId];
+  const s = styleDefinition(styleId);
   const seconds = ((s.attackTicks ?? 0) * TICK_SECONDS).toFixed(1);
   return `${s.attackTicks ?? "?"} ticks / ${seconds}s`;
 }
@@ -3079,7 +3165,7 @@ function currentAttackLabel(unit) {
 }
 
 function passiveText(styleId) {
-  const s = STYLE[styleId];
+  const s = styleDefinition(styleId);
   const notes = [];
   if (s.aoeRadius) notes.push("Passive: hits the main target plus nearby units in a 3x3 splash area.");
   if (s.accuracyPenaltyVsRange) notes.push("Penalty: reduced accuracy against Range units.");
@@ -3118,7 +3204,7 @@ function statGrid(stats) {
 }
 
 function UnitStatSummary({ unit }) {
-  const baseStats = STYLE[unit.style]?.baseStats ?? {};
+  const baseStats = styleDefinition(unit.style).baseStats ?? {};
   return (
     <div className="stat-grid stat-grid-wide unit-stat-summary">
       {STAT_KEYS.map((stat) => {
@@ -3196,7 +3282,7 @@ function UnitEquipmentGrid({ unit, onEquipItem, onUnequipItem, readOnly = false 
             type="button"
             key={slot}
             className={`equipment-slot equipment-${slot} ${gear ? "has-item" : ""} ${defaultWeapon ? "default-weapon" : ""} ${blockedOffhand ? "blocked-slot" : ""}`}
-            title={gear ? `${gearBonusSummary(equipped)} • click to unequip` : defaultWeapon ? `${STYLE[unit.style]?.name || "Default"} default weapon • locked${weaponIsTwoHanded ? " • 2H" : ""}` : blockedOffhand ? "Blocked by a 2-handed weapon" : `Drop ${EQUIPMENT_SLOT_META[slot]?.name || slot} item here`}
+            title={gear ? `${gearBonusSummary(equipped)} • click to unequip` : defaultWeapon ? `${styleDefinition(unit.style).name || "Default"} default weapon • locked${weaponIsTwoHanded ? " • 2H" : ""}` : blockedOffhand ? "Blocked by a 2-handed weapon" : `Drop ${EQUIPMENT_SLOT_META[slot]?.name || slot} item here`}
             onClick={() => !readOnly && gear && onUnequipItem?.(unit.id, slot)}
             onDragOver={(e) => { if (!readOnly && !blockedOffhand) e.preventDefault(); }}
             onDrop={(e) => {
@@ -3282,7 +3368,7 @@ function openTeamForLobby(lobby) {
 const NAME_PREFIXES = ["Lumbridge", "Varrock", "Falador", "Wilderness", "Barrows", "Abyssal", "Rune", "Dragon", "Gilded", "Fremmy", "Karamja", "Ardougne"];
 const NAME_SUFFIXES = ["Rusher", "Tank", "Pure", "Skuller", "Pker", "Chopper", "Spec", "Runner", "Guardian", "Striker", "Scaper", "Smiter"];
 function randomUnitName(styleId) {
-  const style = STYLE[styleId]?.name || "Unit";
+  const style = styleDefinition(styleId).name || "Unit";
   const a = NAME_PREFIXES[Math.floor(Math.random() * NAME_PREFIXES.length)];
   const b = NAME_SUFFIXES[Math.floor(Math.random() * NAME_SUFFIXES.length)];
   return normalizeUnitName(`${a} ${b}`, style);
@@ -3383,9 +3469,10 @@ function targetLabel(value, unit, game) {
       return `Manual attack: ${targetUnit?.name || (unit.manualTargetUnitId ? String(unit.manualTargetUnitId).slice(-6) : "unit")}`;
     }
     if (unit?.manualTargetType === "follow") {
-      const targetUnit = game?.units?.[unit.manualTargetUnitId];
+      const targetUnit = game?.units?.[unit.manualTargetUnitId] || game?.respawnQueue?.[unit.manualTargetUnitId];
       return `Follow: ${targetUnit?.name || (unit.manualTargetUnitId ? String(unit.manualTargetUnitId).slice(-6) : "unit")}`;
     }
+    if (unit?.manualTargetType === "hold") return `Hold position: ${unit.manualTargetRow},${unit.manualTargetCol}`;
     if (unit?.manualTargetType === "tile") return `Manual move: ${unit.manualTargetRow},${unit.manualTargetCol}`;
     if (unit?.manualTargetType === "resource") return `Manual ${unit.manualResourceType === "tree" ? "chop" : "mine"}: ${unit.manualTargetRow},${unit.manualTargetCol}`;
     if (unit?.manualTargetType === "groundItem") {
@@ -3468,7 +3555,76 @@ function TargetControl({ team, lobby, player, onChange, compact = false }) {
   return <TargetSelect team={team} lobby={lobby} onChange={onChange} disabled={false} />;
 }
 
-function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, status }) {
+function numberTimestamp(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function lobbyLastActivityAt(lobby) {
+  if (!lobby) return 0;
+  const times = [numberTimestamp(lobby.createdAt), numberTimestamp(lobby.updatedAt), numberTimestamp(lobby.lastActivityAt)];
+  for (const player of Object.values(lobby.players || {})) {
+    times.push(numberTimestamp(player?.lastSeen), numberTimestamp(player?.joinedAt));
+  }
+  return Math.max(0, ...times);
+}
+
+function lobbyCleanupWindowMs(lobby) {
+  const configuredHours = Number(lobby?.cleanupAfterHours || lobby?.setup?.cleanupAfterHours);
+  const fallbackHours = lobby?.phase === "results" ? RESULTS_LOBBY_CLEANUP_HOURS : STALE_LOBBY_CLEANUP_HOURS;
+  const hours = Number.isFinite(configuredHours) && configuredHours > 0 ? configuredHours : fallbackHours;
+  return Math.max(1, hours) * 60 * 60 * 1000;
+}
+
+function lobbyHasRecentPresence(lobby, now = Date.now()) {
+  return Object.values(lobby?.players || {}).some((player) => {
+    const lastSeen = numberTimestamp(player?.lastSeen);
+    return player?.connected && lastSeen && now - lastSeen < RECENT_PRESENCE_GRACE_MS;
+  });
+}
+
+function isStaleLobby(lobby, now = Date.now()) {
+  if (!lobby) return false;
+  if (lobbyHasRecentPresence(lobby, now)) return false;
+  const lastActivity = lobbyLastActivityAt(lobby);
+  if (!lastActivity) return false;
+  return now - lastActivity > lobbyCleanupWindowMs(lobby);
+}
+
+async function cleanupStaleLobbies({ protectCode = "", force = false } = {}) {
+  const now = Date.now();
+  if (!force) {
+    const last = Number(localStorage.getItem("quadrants_lobby_cleanup_last") || 0);
+    if (last && now - last < LOBBY_CLEANUP_THROTTLE_MS) return { checked: 0, removed: 0, skipped: true };
+  }
+  localStorage.setItem("quadrants_lobby_cleanup_last", String(now));
+  const earliestCleanupWindowMs = Math.min(
+    RESULTS_LOBBY_CLEANUP_HOURS * 60 * 60 * 1000,
+    STALE_LOBBY_CLEANUP_HOURS * 60 * 60 * 1000,
+  );
+  const cleanupQuery = query(
+    ref(db, "lobbies"),
+    orderByChild("lastActivityAt"),
+    endAt(now - earliestCleanupWindowMs),
+    limitToFirst(LOBBY_CLEANUP_BATCH_LIMIT),
+  );
+  const snap = await get(cleanupQuery);
+  const lobbies = snap.val() || {};
+  const updates = {};
+  let checked = 0;
+  let removed = 0;
+  for (const [code, lobby] of Object.entries(lobbies)) {
+    checked += 1;
+    if (protectCode && code === protectCode) continue;
+    if (isStaleLobby(lobby, now)) {
+      updates[`lobbies/${code}`] = null;
+      removed += 1;
+    }
+  }
+  if (removed) await update(ref(db), updates);
+  return { checked, removed, skipped: false };
+}
+
+function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCleanupLobbies, status, cleanupStatus }) {
   return (
     <div className="home-screen">
       <div className="home-card">
@@ -3484,6 +3640,10 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, stat
           <Button onClick={onHost} disabled={!name.trim()} variant="primary">
             Host Lobby
           </Button>
+          <Button onClick={onCleanupLobbies}>
+            Clean Old Lobbies
+          </Button>
+          <p className="cleanup-hint">Inactive lobbies auto-clear after 24 hours. Finished results lobbies clear after 6 hours. Cleanup runs when someone opens the app, and this button runs it immediately.</p>
         </div>
 
         <div className="join-box">
@@ -3497,6 +3657,7 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, stat
         </div>
 
         {status && <div className="status-line">{status}</div>}
+        {cleanupStatus && <div className="cleanup-status-line">{cleanupStatus}</div>}
       </div>
     </div>
   );
@@ -4044,9 +4205,10 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const visibleType = buildHidden || fogged ? "empty" : cell.type;
           const hiddenUnused = buildHidden || (lobby.phase !== "build" && visibleType === "empty" && !baseTeam && cellUnits.length === 0);
           const firstUnit = buildHidden ? null : anchorUnits[0];
+          const largeUnitAnchor = Boolean(firstUnit && unitSize(firstUnit) > 1);
           const targetUnit = buildHidden ? null : cellUnits[0];
           const style = buildHidden ? {} : (fogged ? FOG_STYLE : TILE_STYLE[visibleType] || TILE_STYLE.empty);
-          const inHoverRange = previewUnit && !fogged && !blocksLineOfSight(cell) && canAttack(game.board, previewUnit, cell, STYLE[previewUnit.style]?.range ?? 1, setup);
+          const inHoverRange = previewUnit && !fogged && !blocksLineOfSight(cell) && canAttack(game.board, previewUnit, cell, unitAttackRange(previewUnit), setup);
           const inBuildPath = !fogged && reachableBuildKeys.has(key(cell.row, cell.col)) && lobby.phase === "build" && walkable(cell, setup) && (cell.owner === activeTeam || cell.owner === "neutral");
           const selectedHere = selectedUnitId && cellUnits.some((u) => u.id === selectedUnitId);
           const targetHere = selectedTarget && selectedTarget.row === cell.row && selectedTarget.col === cell.col && !fogged;
@@ -4077,7 +4239,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                   onGroundItemsContextMenu(e, cellGroundItems, cell);
                 }
               }}
-              className={`cell ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
+              className={`cell ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
               style={style}
               title={title}
             >
@@ -4352,7 +4514,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
             <details className="owned-unit buy-owned-unit collapsible-unit-card" key={u.id} open={myUnits.length <= 3} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const fromIndex = Number(e.dataTransfer.getData("text/qb-inventory-index")); if (Number.isFinite(fromIndex)) onEquipItem?.(fromIndex, u.id); }}>
               <summary className="owned-header collapsible-unit-summary">
                 <StyleIcon styleId={u.style} />
-                <b>{STYLE[u.style].name}</b>
+                <b>{styleDefinition(u.style).name}</b>
                 <span>{u.name}</span>
                 <Pill>Max {maxDamageRoll(u, null)}</Pill>
                 <button type="button" className="sell-unit-btn" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemoveUnit?.(u.id); }}>Sell +{STYLE[u.style]?.cost ?? 0}g</button>
@@ -4436,7 +4598,7 @@ function FightStats({ lobby, player }) {
             <span>{TEAM_META[u.team]?.emoji}</span>
             <StyleIcon styleId={u.style} />
             <b>{u.carryingFlagTeam ? "🚩 " : ""}{u.name}</b>
-            <span>{STYLE[u.style]?.name}</span>
+            <span>{styleDefinition(u.style).name}</span>
             <span>HP {u.hp ? Math.round(u.hp) : "respawn"}</span>
             <span>{u.totalDamage ?? 0} dmg</span>
             <span>{u.kills ?? 0} kills</span>
@@ -4578,7 +4740,7 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
 function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem }) {
   const game = lobby.game;
   const canEdit = unit.team === player?.team;
-  const style = STYLE[unit.style];
+  const style = styleDefinition(unit.style);
   const hpPct = Math.max(0, Math.min(100, (unit.hp / Math.max(1, maxHp(unit))) * 100));
   const accuracy = Math.round(100 * (unit.hitsLanded ?? 0) / Math.max(1, unit.attacksAttempted ?? 0));
   return (
@@ -4695,7 +4857,7 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
       </div>
       <p className="muted">Current target: {canEdit ? targetLabel(unit.targetOverride, unit, game) : "Hidden"}</p>
       {canEdit && unit.targetOverride === "homeTeleport" && <p className="teleport-note">Home teleport channels for {HOME_TELEPORT_SECONDS}s. Any incoming attack interrupts it.</p>}
-      {canEdit && pendingManualTargetUnitId === unit.id && <p className="manual-target-note">Click an enemy unit to attack, a road/base tile to move, or any matching resource to chop/mine. If blocked for {MANUAL_TARGET_TIMEOUT}s it returns to team/random targeting.</p>}
+      {canEdit && pendingManualTargetUnitId === unit.id && <p className="manual-target-note">Click an enemy unit to attack, a road/base tile to move, or any matching resource to chop/mine. Skillers now keep working toward blocked resource orders and clear matching blockers when possible.</p>}
       {canEdit && unit.targetOverride === "manual" && unit.manualTargetType && <button className="clear-manual-btn" onClick={() => onUpdateUnit(unit.id, { targetOverride: "inherit", manualTargetType: null, manualTargetUnitId: null, manualTargetRow: null, manualTargetCol: null, manualResourceType: null, manualGroundItemId: null, manualTargetStartedAt: null, manualTargetBlockedSince: null, homeTeleportStartedAt: null, homeTeleportHpAtStart: null, homeTeleportLastAttackedAtStart: null, homeTeleportPreviousTargetOverride: null, homeTeleportPreviousManualTargetType: null, homeTeleportPreviousManualTargetUnitId: null, homeTeleportPreviousManualTargetRow: null, homeTeleportPreviousManualTargetCol: null, homeTeleportPreviousManualResourceType: null, homeTeleportPreviousManualGroundItemId: null })}>Clear manual target</button>}
     </div>
   );
@@ -4836,7 +4998,7 @@ function ResultsView({ lobby, resetToLobby, continueRosterToLobby, isHost, onUpd
     const rows = results.allUnits ?? [];
     const headers = ["rank", "team", "unit_id", "name", "style", "priority", "damage", "kills", "flag_grabs", "flag_captures", "hill_uncontested_seconds", "hill_contested_seconds", "resources_cleared", "levels_gained", "deaths", "attack", "strength", "defence", "magic", "range", "prayer", "hitpoints"];
     const esc = (v) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-    const csvRows = rows.map((u, i) => [i + 1, TEAM_META[u.team]?.name, u.id, u.name, STYLE[u.style]?.name, u.priority ?? "auto", u.totalDamage ?? 0, u.kills ?? 0, u.flagGrabs ?? 0, u.flagCaptures ?? 0, Math.floor(u.hillUncontestedTime ?? 0), Math.floor(u.hillContestedTime ?? 0), u.resourcesCleared ?? 0, u.levelsGained ?? 0, u.deathCount ?? 0, ...STAT_KEYS.map((k) => u.stats?.[k]?.level ?? 1)].map(esc).join(","));
+    const csvRows = rows.map((u, i) => [i + 1, TEAM_META[u.team]?.name, u.id, u.name, styleDefinition(u.style).name, u.priority ?? "auto", u.totalDamage ?? 0, u.kills ?? 0, u.flagGrabs ?? 0, u.flagCaptures ?? 0, Math.floor(u.hillUncontestedTime ?? 0), Math.floor(u.hillContestedTime ?? 0), u.resourcesCleared ?? 0, u.levelsGained ?? 0, u.deathCount ?? 0, ...STAT_KEYS.map((k) => u.stats?.[k]?.level ?? 1)].map(esc).join(","));
     const csv = [headers.join(","), ...csvRows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -5031,7 +5193,7 @@ function TeamResults({ team, results, lobby }) {
               <span>#{i + 1}</span>
               <StyleIcon styleId={u.style} />
               <b>{u.name}</b>
-              <span>{STYLE[u.style]?.name}</span>
+              <span>{styleDefinition(u.style).name}</span>
               <span>{u.totalDamage ?? 0} dmg</span>
               <span>{u.damageToUnits ?? 0}/{u.damageToBases ?? 0} unit/base</span>
               <span>{u.kills ?? 0} kills</span>
@@ -5057,6 +5219,7 @@ export default function QuadrantsOnline() {
   const [lobbyCode, setLobbyCode] = useState(localStorage.getItem("quadrants_lobby_code") || "");
   const [lobby, setLobby] = useState(null);
   const [status, setStatus] = useState("");
+  const [cleanupStatus, setCleanupStatus] = useState("");
   const [selectedTool, setSelectedTool] = useState({ kind: "terrain", type: "road" });
   const [showStats, setShowStats] = useState(false);
   const [selectedUnitId, setSelectedUnitId] = useState(null);
@@ -5069,6 +5232,14 @@ export default function QuadrantsOnline() {
   const isHost = lobby?.hostId === playerId;
   const game = lobby?.game;
   const phase = lobby?.phase || "home";
+
+  useEffect(() => {
+    cleanupStaleLobbies({ protectCode: lobbyCode }).then((result) => {
+      if (result?.removed) setCleanupStatus(`Cleaned ${result.removed} old lobby${result.removed === 1 ? "" : "ies"} from Firebase.`);
+    }).catch((err) => {
+      console.warn("Lobby cleanup failed", err);
+    });
+  }, []);
 
   useEffect(() => {
     if (!lobbyCode) {
@@ -5097,7 +5268,14 @@ export default function QuadrantsOnline() {
     const playerRef = ref(db, `lobbies/${lobbyCode}/players/${playerId}`);
     let heartbeatId = null;
     let disconnectReady = false;
-    const writePresence = () => update(playerRef, { connected: true, lastSeen: Date.now() }).catch(() => {});
+    const writePresence = () => {
+      const now = Date.now();
+      return update(ref(db), {
+        [`lobbies/${lobbyCode}/players/${playerId}/connected`]: true,
+        [`lobbies/${lobbyCode}/players/${playerId}/lastSeen`]: now,
+        [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+      }).catch(() => {});
+    };
     const unsub = onValue(connectedRef, (snap) => {
       if (snap.val() === true) {
         writePresence();
@@ -5128,7 +5306,7 @@ export default function QuadrantsOnline() {
     if (!connected.length) return;
     const nextHost = [...connected].sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || String(a.id).localeCompare(String(b.id)))[0];
     if (nextHost && lobby.hostId !== nextHost.id) {
-      update(ref(db, `lobbies/${lobbyCode}`), { hostId: nextHost.id, updatedAt: Date.now() });
+      update(ref(db, `lobbies/${lobbyCode}`), { hostId: nextHost.id, updatedAt: Date.now(), lastActivityAt: Date.now() });
     }
   }, [lobby?.hostId, lobby?.players, lobbyCode]);
 
@@ -5221,6 +5399,18 @@ export default function QuadrantsOnline() {
     if (phase !== "fight" || !isResourceInfo) setSelectedResource(null);
   }, [selectedResource, game?.board, phase]);
 
+  async function runLobbyCleanup() {
+    setCleanupStatus("Checking Firebase for old lobbies...");
+    try {
+      const result = await cleanupStaleLobbies({ protectCode: lobbyCode, force: true });
+      if (result.removed) setCleanupStatus(`Cleaned ${result.removed} old lobby${result.removed === 1 ? "" : "ies"} from Firebase.`);
+      else setCleanupStatus(`No old lobbies needed cleanup. Checked ${result.checked || 0}.`);
+    } catch (err) {
+      console.error(err);
+      setCleanupStatus("Could not clean old lobbies. Check Firebase rules/network and try again.");
+    }
+  }
+
   async function makeUniqueLobbyCode() {
     for (let i = 0; i < 20; i++) {
       const code = generateLobbyCode();
@@ -5235,6 +5425,7 @@ export default function QuadrantsOnline() {
       const cleanName = name.trim().slice(0, 18);
       if (!cleanName) return;
       localStorage.setItem("quadrants_player_name", cleanName);
+      cleanupStaleLobbies({ force: true }).catch((err) => console.warn("Lobby cleanup before hosting failed", err));
       const code = await makeUniqueLobbyCode();
       const setup = { ...DEFAULT_SETUP };
       const game = makeInitialGame(setup);
@@ -5245,6 +5436,8 @@ export default function QuadrantsOnline() {
         hostId: playerId,
         createdAt: now,
         updatedAt: now,
+        lastActivityAt: now,
+        cleanupAfterHours: STALE_LOBBY_CLEANUP_HOURS,
         setup,
         game,
         ready: { build: {}, buy: {} },
@@ -5448,7 +5641,7 @@ export default function QuadrantsOnline() {
           cooldown: 0,
           moveTimer: 0,
           carryingFlagTeam: null,
-          targetOverride: u.targetOverride && !["homeTeleport", "manual"].includes(u.targetOverride) ? u.targetOverride : defaultUnitTargetOverride(u.style),
+          targetOverride: u.targetOverride === "manual" && u.manualTargetType === "follow" ? "manual" : (u.targetOverride && !["homeTeleport", "manual"].includes(u.targetOverride) ? u.targetOverride : defaultUnitTargetOverride(u.style)),
         }));
       game.units = objectFromArray(nextUnits);
       game.gold = { ...makeGold(lobby.setup), ...(lobby.carryoverGold || {}) };
@@ -5463,12 +5656,18 @@ export default function QuadrantsOnline() {
       ready: { build: {}, buy: {} },
       voteEnd: {},
       updatedAt: Date.now(),
+      lastActivityAt: Date.now(),
     });
   }
 
   async function setReady(phaseName, value) {
     if (!lobby || !player) return;
-    await update(ref(db, `lobbies/${lobbyCode}/ready/${phaseName}`), { [playerId]: value });
+    const now = Date.now();
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/ready/${phaseName}/${playerId}`]: value,
+      [`lobbies/${lobbyCode}/updatedAt`]: now,
+      [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+    });
   }
 
   async function advanceToBuy() {
@@ -5480,6 +5679,8 @@ export default function QuadrantsOnline() {
       "ready/buy": {},
       "game/board": finalizedBoard,
       "game/log": ["Buy Phase started. Empty void tiles were filled with random water, trees, and rocks for free.", "Buy units, name them, choose targets, and finalize.", ...(lobby.game.log || [])].slice(0, 8),
+      updatedAt: Date.now(),
+      lastActivityAt: Date.now(),
     });
   }
 
@@ -5487,7 +5688,7 @@ export default function QuadrantsOnline() {
     if (!lobby || !isHost) return;
     if (!allReadyForPhase(lobby, "buy")) return;
     const teams = activeTeams(lobby.game.setup);
-    const units = arrayFromObject(lobby.game.units);
+    const units = arrayFromObject(lobby.game.units).map(normalizeRuntimeUnit).filter((u) => u && STYLE[u.style]);
     const overLimitTeam = teams.find((team) => units.filter((u) => u.team === team).length > Number(lobby.game.setup.maxUnits || DEFAULT_SETUP.maxUnits));
     if (overLimitTeam) {
       alert(`${TEAM_META[overLimitTeam]?.name || overLimitTeam} is over the unit cap. Sell units before starting.`);
@@ -5505,6 +5706,8 @@ export default function QuadrantsOnline() {
       "game/units": staggerUnitsForFightStart(units),
       voteEnd: {},
       "game/log": [`${GAME_MODES[lobby.game.setup.gameMode || "classic"]?.name || "Fight"} started. Host browser simulates combat; host migration continues if host disconnects.`, ...(lobby.game.log || [])].slice(0, 8),
+      updatedAt: Date.now(),
+      lastActivityAt: Date.now(),
     });
   }
 
@@ -5519,6 +5722,7 @@ export default function QuadrantsOnline() {
       carryoverGold: null,
       carryoverLoot: null,
       updatedAt: Date.now(),
+      lastActivityAt: Date.now(),
     });
   }
 
@@ -5538,6 +5742,7 @@ export default function QuadrantsOnline() {
     if (isCenterCell(row, col, game.setup)) return;
     if (cell.owner !== team) return;
     if (isBaseCell(row, col, game.setup)) return;
+    if (isOuterTreeWallCell(row, col, cell, game.setup)) return;
     const gold = game.gold?.[team] ?? 0;
     const nextBoard = cloneBoard(game.board);
     const hadAllConnections = allTeamsConnectedToCenter(game.board, game.setup);
@@ -5579,6 +5784,7 @@ export default function QuadrantsOnline() {
     if (readyMap(lobby, "buy")[playerId]) return;
     const team = player.team;
     const style = STYLE[styleId];
+    if (!style) return;
     const units = arrayFromObject(game.units);
     const owned = units.filter((u) => u.team === team).length + arrayFromObject(game.respawnQueue).filter((u) => u.team === team).length;
     if (owned >= game.setup.maxUnits) return;
@@ -5877,6 +6083,21 @@ export default function QuadrantsOnline() {
       }),
     });
 
+    menuItems.push({
+      icon: "🛡️",
+      label: unit ? `Hold position ${cell.row},${cell.col}` : "Select one of your living units first",
+      disabled: !unit || !canMove,
+      title: canMove ? "Move to this tile, attack enemies only when they enter range, then return to this tile." : "The clicked tile is not walkable.",
+      action: () => setManualTarget(unit.id, {
+        manualTargetType: "hold",
+        manualTargetUnitId: null,
+        manualTargetRow: cell.row,
+        manualTargetCol: cell.col,
+        manualResourceType: null,
+        manualGroundItemId: null,
+      }),
+    });
+
     for (const target of hostileUnits) {
       menuItems.push({
         icon: "⚔️",
@@ -6070,16 +6291,19 @@ export default function QuadrantsOnline() {
     const active = activeTeams(lobby.setup);
     const nextUnits = tracked
       .filter((u) => active.includes(u.team))
-      .map((u, index) => makeUnit(u.id || `${u.team}_carry_${index}`, u.team, u.style, lobby.setup, {
+      .map((u, index) => {
+        const safeStyle = safeStyleId(u.style);
+        return makeUnit(u.id || `${u.team}_carry_${index}`, u.team, safeStyle, lobby.setup, {
         ...u,
-        name: normalizeUnitName(u.name, STYLE[u.style]?.name || "Unit"),
+        name: normalizeUnitName(u.name, styleDefinition(safeStyle).name || "Unit"),
         stats: u.stats,
         priority: u.priority,
-        targetOverride: u.targetOverride && !["homeTeleport", "manual"].includes(u.targetOverride) ? u.targetOverride : defaultUnitTargetOverride(u.style),
+        targetOverride: u.targetOverride === "manual" && u.manualTargetType === "follow" ? "manual" : (u.targetOverride && !["homeTeleport", "manual"].includes(u.targetOverride) ? u.targetOverride : defaultUnitTargetOverride(safeStyle)),
         ownerPlayerId: u.ownerPlayerId,
         carryingFlagTeam: null,
         maxHpSeen: Math.max(u.maxHpSeen ?? 0, u.stats?.hitpoints?.level ?? 1),
-      }));
+      });
+      });
     const nextGame = makeInitialGame(lobby.setup);
     const carryoverGold = { ...(previous.gold || makeGold(lobby.setup)) };
     if (lobby.setup?.restockGoldOnContinued) {
@@ -6096,6 +6320,7 @@ export default function QuadrantsOnline() {
       ready: { build: {}, buy: {} },
       voteEnd: {},
       updatedAt: Date.now(),
+      lastActivityAt: Date.now(),
     });
   }
 
@@ -6110,7 +6335,7 @@ export default function QuadrantsOnline() {
   }
 
   if (!lobbyCode || !lobby) {
-    return <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} status={status} />;
+    return <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} onCleanupLobbies={runLobbyCleanup} status={status} cleanupStatus={cleanupStatus} />;
   }
 
 
