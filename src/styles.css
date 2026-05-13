@@ -1944,14 +1944,25 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   touch-action: none;
   cursor: default;
 }
+.board-wrap.large-board {
+  height: min(76vh, 860px);
+  min-height: 560px;
+  border: 1px solid rgba(120,113,108,.55);
+  background: #0c0a09;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.35);
+}
 .board-wrap.is-panning,
 .board-wrap:active {
   cursor: grabbing;
 }
 .board-pan-scene {
   position: relative;
-  transform-origin: center center;
+  transform-origin: top left;
   will-change: transform;
+}
+.board-wrap.large-board .board-pan-scene {
+  display: inline-block;
+  min-width: 100%;
 }
 .board-view-controls {
   position: absolute;

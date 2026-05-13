@@ -22,7 +22,7 @@ const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 1
 const BASE_ZONE_SIZE = 3;
 const LARGE_BASE_ZONE_SIZE = 5;
 const BASE_ZONE_INSET = 1;
-const CENTER_RADIUS = 1;
+const CENTER_RADIUS = 2;
 const TICK_SECONDS = 0.6;
 const MOVE_EVERY = 0.75;
 const RESPAWN_BASE_TIME = 5;
@@ -696,13 +696,25 @@ function ownerFor(row, col, setup) {
   const mid = midOf(size);
   if (isCenterCell(row, col, size)) return "neutral";
   if (usesArenaLayout(setup)) {
+    for (const team of teams) {
+      if (isInBaseZone(row, col, team, setup)) return team;
+    }
+    const relRow = row - mid;
+    const relCol = col - mid;
+    const cellLen = Math.hypot(relRow, relCol) || 1;
     let best = teams[0];
+    let bestScore = -Infinity;
     let bestDist = Infinity;
     for (const team of teams) {
       const base = baseOf(team, setup);
+      const baseRow = base.row - mid;
+      const baseCol = base.col - mid;
+      const baseLen = Math.hypot(baseRow, baseCol) || 1;
+      const score = (relRow * baseRow + relCol * baseCol) / (cellLen * baseLen);
       const dist = Math.abs(row - base.row) + Math.abs(col - base.col);
-      if (dist < bestDist || (dist === bestDist && (TEAM_ORDER[team] ?? 0) < (TEAM_ORDER[best] ?? 0))) {
+      if (score > bestScore + 0.000001 || (Math.abs(score - bestScore) <= 0.000001 && (dist < bestDist || (dist === bestDist && (TEAM_ORDER[team] ?? 0) < (TEAM_ORDER[best] ?? 0))))) {
         best = team;
+        bestScore = score;
         bestDist = dist;
       }
     }
@@ -2644,6 +2656,10 @@ function runDevTests() {
   console.assert(baseOf("orange", setup8).row === 2 && baseOf("orange", setup8).col === 15, "Orange should use the top-center base in 8-player arena layout");
   console.assert(baseOf("pink", setup8).row === 27 && baseOf("pink", setup8).col === 15, "Pink should use the bottom-center base in 8-player arena layout");
   console.assert(ownerFor(15, 2, setup8) === "green", "8-player arena should assign middle-left zone to Green");
+  console.assert(centerTiles(30).length === 25, "Center tiles should expand to a 5x5 middle area");
+  const setup5 = { ...DEFAULT_SETUP, players: 5, gridSize: 30, baseZoneSize: 5 };
+  const touchesCenter = (team) => centerTiles(sizeOf(setup5)).some((tile) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dr, dc]) => inBounds(tile.row + dr, tile.col + dc, sizeOf(setup5)) && ownerFor(tile.row + dr, tile.col + dc, setup5) === team));
+  console.assert(activeTeams(setup5).every(touchesCenter), "Every 5-player arena build zone should border the center so teams can build a path in");
   console.assert(baseOf("blue", 17).row === 15 && baseOf("blue", 17).col === 15, "3-player blue base should use the bottom-right starter patch");
   console.assert(ownerFor(15, 1, setup3) === "void", "3-player mode should make the fourth bottom-left zone void/unbuildable");
   const board3 = makeBoard(setup3);
@@ -3819,25 +3835,58 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
   const [hoverUnit, setHoverUnit] = useState(null);
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
   const panRef = useRef(null);
+  const wrapRef = useRef(null);
+  const boardRef = useRef(null);
+  const largeBoard = size >= 24;
   const selectedUnit = selectedUnitId ? units.find((u) => u.id === selectedUnitId && u.hp > 0) : null;
   const previewUnit = hoverUnit || selectedUnit;
   const selectedTarget = useMemo(() => selectedUnit ? selectedTargetPreview(game, selectedUnit, activeTeam) : null, [game, selectedUnit, activeTeam]);
   const projectileEffects = effects.filter((e) => e.type !== "spawn" && (combatType(e.style) === "range" || combatType(e.style) === "magic"));
   const reachableBuildKeys = useMemo(() => activeTeam && lobby.phase === "build" ? reachableRoadKeys(game.board, activeTeam, setup) : new Set(), [game.board, activeTeam, lobby.phase, setup]);
-  useEffect(() => { setView({ zoom: 1, x: 0, y: 0 }); }, [size]);
+  const constrainView = (next) => {
+    const wrap = wrapRef.current;
+    const board = boardRef.current;
+    if (!wrap || !board || !largeBoard) return { zoom: Math.max(1, Math.min(2.5, next.zoom || 1)), x: 0, y: 0 };
+    const zoom = Math.max(1, Math.min(2.5, next.zoom || 1));
+    const vw = wrap.clientWidth || 1;
+    const vh = wrap.clientHeight || 1;
+    const bw = board.offsetWidth || 1;
+    const bh = board.offsetHeight || 1;
+    const scaledW = bw * zoom;
+    const scaledH = bh * zoom;
+    const clampAxis = (value, viewport, scaled) => {
+      if (scaled <= viewport) return Math.round((viewport - scaled) / 2);
+      return Math.max(viewport - scaled, Math.min(0, value));
+    };
+    return {
+      zoom,
+      x: clampAxis(next.x || 0, vw, scaledW),
+      y: clampAxis(next.y || 0, vh, scaledH),
+    };
+  };
+  const resetView = () => setView((cur) => constrainView({ zoom: 1, x: 0, y: 0 }));
+  useEffect(() => {
+    const raf = requestAnimationFrame(resetView);
+    return () => cancelAnimationFrame(raf);
+  }, [size, largeBoard]);
+  useEffect(() => {
+    const onResize = () => setView((cur) => constrainView(cur));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [largeBoard]);
   const setZoom = (nextZoom, anchor = null) => {
     setView((cur) => {
-      const zoom = Math.max(0.55, Math.min(2.5, nextZoom));
-      if (!anchor) return { ...cur, zoom };
-      const ratio = zoom / cur.zoom;
-      return { zoom, x: anchor.x - (anchor.x - cur.x) * ratio, y: anchor.y - (anchor.y - cur.y) * ratio };
+      const zoom = Math.max(1, Math.min(2.5, nextZoom));
+      if (!anchor) return constrainView({ ...cur, zoom });
+      const ratio = zoom / (cur.zoom || 1);
+      return constrainView({ zoom, x: anchor.x - (anchor.x - cur.x) * ratio, y: anchor.y - (anchor.y - cur.y) * ratio });
     });
   };
   useEffect(() => {
     const onMove = (e) => {
       if (!panRef.current) return;
       const start = panRef.current;
-      setView((cur) => ({ ...cur, x: start.x + (e.clientX - start.clientX), y: start.y + (e.clientY - start.clientY) }));
+      setView(() => constrainView({ zoom: start.zoom, x: start.x + (e.clientX - start.clientX), y: start.y + (e.clientY - start.clientY) }));
     };
     const onUp = () => { panRef.current = null; };
     window.addEventListener("mousemove", onMove);
@@ -3846,11 +3895,12 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
+  }, [largeBoard]);
 
   return (
     <div
-      className={`board-wrap ${panRef.current ? "is-panning" : ""}`}
+      ref={wrapRef}
+      className={`board-wrap ${largeBoard ? "large-board" : ""} ${panRef.current ? "is-panning" : ""}`}
       onWheel={(e) => {
         e.preventDefault();
         const rect = e.currentTarget.getBoundingClientRect();
@@ -3860,7 +3910,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
       onMouseDown={(e) => {
         if (e.button !== 1) return;
         e.preventDefault();
-        panRef.current = { clientX: e.clientX, clientY: e.clientY, x: view.x, y: view.y };
+        panRef.current = { clientX: e.clientX, clientY: e.clientY, x: view.x, y: view.y, zoom: view.zoom };
       }}
       onAuxClick={(e) => { if (e.button === 1) e.preventDefault(); }}
     >
@@ -3869,11 +3919,11 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
         <span>{Math.round(view.zoom * 100)}%</span>
         <button type="button" onClick={() => setZoom(view.zoom * 1.12)}>+</button>
         <button type="button" onClick={() => setZoom(view.zoom * 0.88)}>-</button>
-        <button type="button" onClick={() => setView({ zoom: 1, x: 0, y: 0 })}>Reset</button>
-        <small>Scroll zoom • middle-drag pan</small>
+        <button type="button" onClick={resetView}>Reset</button>
+        <small>Scroll zoom in/out • middle-drag pan</small>
       </div>
       <div className="board-pan-scene" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
-        <div className="board" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
+        <div ref={boardRef} className="board" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
         {game.board.flat().map((cell) => {
           const baseTeam = baseTeamAt(cell.row, cell.col, setup);
           const rawCellUnits = unitsByCell.get(key(cell.row, cell.col)) || [];
