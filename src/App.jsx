@@ -3636,19 +3636,19 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
                   <option value={30}>30x30 arena</option>
                 </select>
               </label>
-              <label>
-                Base zone
-                <select disabled={!isHost} value={baseZoneSizeFor(lobby.setup)} onChange={(e) => onUpdateSetup({ baseZoneSize: Number(e.target.value) })}>
-                  <option value={3}>3x3 base zone</option>
-                  <option value={5}>5x5 base zone</option>
-                </select>
-              </label>
-              <label>
+              <label className="middle-section-control">
                 Middle section
                 <select disabled={!isHost} value={centerSizeFor(lobby.setup)} onChange={(e) => onUpdateSetup({ centerSize: Number(e.target.value) })}>
                   <option value={3}>3x3 middle</option>
                   <option value={5}>5x5 middle</option>
                   <option value={7}>7x7 middle</option>
+                </select>
+              </label>
+              <label>
+                Base zone
+                <select disabled={!isHost} value={baseZoneSizeFor(lobby.setup)} onChange={(e) => onUpdateSetup({ baseZoneSize: Number(e.target.value) })}>
+                  <option value={3}>3x3 base zone</option>
+                  <option value={5}>5x5 base zone</option>
                 </select>
               </label>
               <label>

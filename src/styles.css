@@ -2035,3 +2035,6 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .splat {
   will-change: transform, opacity;
 }
+.middle-section-control select {
+  border-color: rgba(250, 204, 21, .55);
+}
