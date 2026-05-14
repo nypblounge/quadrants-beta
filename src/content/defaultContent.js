@@ -1,0 +1,981 @@
+export const CONTENT_SCHEMA_VERSION = 1;
+
+export const BONUS_KEYS = [
+  "stab",
+  "slash",
+  "crush",
+  "magic",
+  "range",
+  "defenceStab",
+  "defenceSlash",
+  "defenceCrush",
+  "defenceMagic",
+  "defenceRange",
+  "meleeStrength",
+  "rangedStrength",
+  "magicDamage",
+  "prayer",
+];
+
+export const STAT_KEYS = ["attack", "strength", "defence", "magic", "range", "prayer", "hitpoints"];
+
+export const ITEM_TYPES = ["gear", "consumable", "resource", "loot", "ammo"];
+export const EQUIPMENT_SLOTS = ["none", "weapon", "offHand", "helmet", "neck", "chest", "legs", "boots", "gloves", "cape", "ammo", "ring"];
+export const CONSUMABLE_EFFECTS = ["", "prayerXp"];
+export const UNIT_COMBAT_TYPES = ["melee", "range", "magic"];
+export const RESOURCE_TARGETS = ["", "tree", "rock"];
+
+export const DEFAULT_ITEMS = [
+  {
+    "id": "cape_of_skulls",
+    "name": "Cape of Skulls",
+    "type": "gear",
+    "slot": "cape",
+    "icon": "cape_of_skulls.png",
+    "cost": 50,
+    "sellValue": 25,
+    "stackable": false,
+    "twoHanded": false,
+    "shopForSale": true,
+    "shopStock": 0,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "defenceStab": 1,
+      "defenceSlash": 1,
+      "defenceCrush": 1,
+      "defenceMagic": 1,
+      "defenceRange": 1
+    }
+  },
+  {
+    "id": "bronze_med_helm",
+    "name": "Bronze Med Helm",
+    "type": "gear",
+    "slot": "helmet",
+    "icon": "bronze_med_helm.png",
+    "cost": 5,
+    "sellValue": 2,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "defenceStab": 1,
+      "defenceSlash": 1,
+      "defenceCrush": 1,
+      "defenceRange": 1
+    }
+  },
+  {
+    "id": "bones",
+    "name": "Bones",
+    "type": "consumable",
+    "slot": "none",
+    "icon": "bones.png",
+    "cost": 1,
+    "sellValue": 0,
+    "stackable": true,
+    "twoHanded": false,
+    "consumable": "prayerXp",
+    "prayerXp": 3,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {}
+  },
+  {
+    "id": "big_bones",
+    "name": "Big Bones",
+    "type": "consumable",
+    "slot": "none",
+    "icon": "big_bones.png",
+    "cost": 15,
+    "sellValue": 15,
+    "stackable": true,
+    "twoHanded": false,
+    "consumable": "prayerXp",
+    "prayerXp": 4.5,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {}
+  },
+  {
+    "id": "logs",
+    "name": "Logs",
+    "type": "resource",
+    "slot": "none",
+    "icon": "logs.png",
+    "cost": 2,
+    "sellValue": 2,
+    "stackable": true,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {}
+  },
+  {
+    "id": "ore",
+    "name": "Iron Ore",
+    "type": "resource",
+    "slot": "none",
+    "icon": "ore.png",
+    "cost": 4,
+    "sellValue": 4,
+    "stackable": true,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {}
+  },
+  {
+    "id": "bronze_platelegs",
+    "name": "Bronze Platelegs",
+    "type": "gear",
+    "slot": "legs",
+    "icon": "bronze_platelegs.png",
+    "cost": 80,
+    "sellValue": 40,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "defenceStab": 1,
+      "defenceSlash": 1,
+      "defenceCrush": 1,
+      "defenceMagic": 1,
+      "defenceRange": 1
+    }
+  },
+  {
+    "id": "green_d_hide_body",
+    "name": "Green  d'hide body",
+    "type": "gear",
+    "slot": "chest",
+    "icon": "Green_d'hide_body.png",
+    "cost": 200,
+    "sellValue": 100,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": -2,
+      "range": 2,
+      "defenceStab": 1,
+      "defenceSlash": 1,
+      "defenceCrush": 1,
+      "defenceMagic": 2,
+      "defenceRange": 1
+    }
+  },
+  {
+    "id": "green_dhide_chaps",
+    "name": "Green_dhide_chaps",
+    "type": "gear",
+    "slot": "legs",
+    "icon": "Green_d'hide_chaps.png",
+    "cost": 80,
+    "sellValue": 40,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": -2,
+      "range": 2,
+      "defenceStab": 1,
+      "defenceSlash": 1,
+      "defenceCrush": 1,
+      "defenceMagic": 2,
+      "defenceRange": 1
+    }
+  },
+  {
+    "id": "runelegs",
+    "name": "Rune Platelegs",
+    "type": "gear",
+    "slot": "legs",
+    "icon": "Rune_platelegs.png",
+    "cost": 250,
+    "sellValue": 125,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": -4,
+      "defenceStab": 3,
+      "defenceSlash": 3,
+      "defenceCrush": 3,
+      "defenceMagic": -2,
+      "defenceRange": 4
+    }
+  },
+  {
+    "id": "runeplatebody",
+    "name": "Rune Platebody",
+    "type": "gear",
+    "slot": "chest",
+    "icon": "Rune_platebody.png",
+    "cost": 300,
+    "sellValue": 150,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": -5,
+      "defenceStab": 4,
+      "defenceSlash": 4,
+      "defenceCrush": 4,
+      "defenceMagic": -4,
+      "defenceRange": 5
+    }
+  },
+  {
+    "id": "bluewizardrobe",
+    "name": "Blue Wizard Robe",
+    "type": "gear",
+    "slot": "chest",
+    "icon": "Blue_wizard_robe.png",
+    "cost": 80,
+    "sellValue": 40,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": 3,
+      "defenceMagic": 3
+    }
+  },
+  {
+    "id": "bluewizardskirt",
+    "name": "Blue Wizard Skirt",
+    "type": "gear",
+    "slot": "legs",
+    "icon": "Blue_skirt.png",
+    "cost": 60,
+    "sellValue": 30,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": 2,
+      "defenceMagic": 2
+    }
+  },
+  {
+    "id": "avas_attractor",
+    "name": "Avas_attractor",
+    "type": "gear",
+    "slot": "cape",
+    "icon": "Ava's_attractor.png",
+    "cost": 0,
+    "sellValue": 0,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "range": 2,
+      "defenceMagic": 2
+    }
+  },
+  {
+    "id": "zamorak_cape",
+    "name": "zamorak_cape",
+    "type": "gear",
+    "slot": "cape",
+    "icon": "Zamorak_cape.png",
+    "cost": 0,
+    "sellValue": 0,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "magic": 10,
+      "defenceStab": 1,
+      "defenceSlash": 1,
+      "defenceCrush": 2,
+      "defenceMagic": 10
+    }
+  },
+  {
+    "id": "fire_cape",
+    "name": "Fire_cape",
+    "type": "gear",
+    "slot": "cape",
+    "icon": "Fire_cape.png",
+    "cost": 0,
+    "sellValue": 0,
+    "stackable": false,
+    "twoHanded": false,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "stab": 1,
+      "slash": 1,
+      "crush": 1,
+      "magic": 1,
+      "range": 1,
+      "defenceStab": 11,
+      "defenceSlash": 11,
+      "defenceCrush": 11,
+      "defenceMagic": 11,
+      "defenceRange": 11,
+      "meleeStrength": 4,
+      "prayer": 2
+    }
+  }
+];
+
+export const DEFAULT_NPCS = [
+  {
+    "id": "goblin",
+    "name": "Goblin",
+    "icon": "goblin.png",
+    "size": 1,
+    "combatType": "melee",
+    "hp": 30,
+    "baseDamage": 3,
+    "attackSpeed": 3,
+    "attackRange": 1,
+    "spawnAmount": 1,
+    "maxAlive": 1,
+    "spawnInterval": 60,
+      "maxSpawns": 0,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 10,
+      "strength": 10,
+      "defence": 10,
+      "magic": 10,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 30
+    },
+    "drops": [
+      {
+        "id": "drop_bones",
+        "type": "item",
+        "itemId": "bones",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_gold",
+        "type": "gold",
+        "itemId": "",
+        "chance": 0.8,
+        "minQty": 1,
+        "maxQty": 10
+      },
+      {
+        "id": "drop_bronze_med_helm",
+        "type": "item",
+        "itemId": "bronze_med_helm",
+        "chance": 0.2,
+        "minQty": 1,
+        "maxQty": 1
+      }
+    ]
+  },
+  {
+    "id": "hill_giant",
+    "name": "Hill Giant",
+    "icon": "hill_giant.png",
+    "size": 2,
+    "combatType": "melee",
+    "hp": 100,
+    "baseDamage": 9,
+    "attackSpeed": 5,
+    "attackRange": 1,
+    "spawnAmount": 0,
+    "maxAlive": 0,
+    "spawnInterval": 120,
+      "maxSpawns": 0,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 30,
+      "strength": 30,
+      "defence": 30,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 100
+    },
+    "drops": [
+      {
+        "id": "drop_big_bones",
+        "type": "item",
+        "itemId": "big_bones",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_bronze_platelegs",
+        "type": "item",
+        "itemId": "bronze_platelegs",
+        "chance": 0.1,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_gold",
+        "type": "gold",
+        "itemId": "",
+        "chance": 0.2,
+        "minQty": 1,
+        "maxQty": 25
+      },
+      {
+        "id": "drop_logs",
+        "type": "item",
+        "itemId": "logs",
+        "chance": 0.05,
+        "minQty": 1,
+        "maxQty": 5
+      },
+      {
+        "id": "drop_ore",
+        "type": "item",
+        "itemId": "ore",
+        "chance": 0.05,
+        "minQty": 1,
+        "maxQty": 5
+      }
+    ]
+  },
+  {
+    "id": "tz_tok_jad",
+    "name": "TzTok_Jad",
+    "icon": "280px-TzTok-Jad.png",
+    "size": 3,
+    "combatType": "melee",
+    "hp": 250,
+    "baseDamage": 50,
+    "attackSpeed": 8,
+    "attackRange": 10,
+    "spawnAmount": 0,
+    "maxAlive": 0,
+    "spawnInterval": 180,
+      "maxSpawns": 0,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 100,
+      "strength": 100,
+      "defence": 100,
+      "magic": 100,
+      "range": 100,
+      "prayer": 1,
+      "hitpoints": 250
+    },
+    "drops": [
+      {
+        "id": "drop_1",
+        "type": "item",
+        "itemId": "fire_cape",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      }
+    ]
+  },
+  {
+    "id": "kolodion",
+    "name": "kolodion",
+    "icon": "200px-Kolodion_demon_form.png",
+    "size": 2,
+    "combatType": "magic",
+    "hp": 150,
+    "baseDamage": 20,
+    "attackSpeed": 6,
+    "attackRange": 5,
+    "spawnAmount": 0,
+    "maxAlive": 0,
+    "spawnInterval": 60,
+      "maxSpawns": 0,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 10,
+      "strength": 10,
+      "defence": 50,
+      "magic": 100,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 150
+    },
+    "drops": [
+      {
+        "id": "drop_1",
+        "type": "item",
+        "itemId": "zamorak_cape",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      }
+    ]
+  },
+  {
+    "id": "evilchicken",
+    "name": "Evil Chicken",
+    "icon": "250px-Evil_Chicken.png",
+    "size": 2,
+    "combatType": "range",
+    "hp": 75,
+    "baseDamage": 10,
+    "attackSpeed": 4,
+    "attackRange": 10,
+    "spawnAmount": 0,
+    "maxAlive": 0,
+    "spawnInterval": 60,
+      "maxSpawns": 0,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 10,
+      "strength": 10,
+      "defence": 50,
+      "magic": 50,
+      "range": 50,
+      "prayer": 1,
+      "hitpoints": 75
+    },
+    "drops": [
+      {
+        "id": "drop_1",
+        "type": "item",
+        "itemId": "avas_attractor",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      }
+    ]
+  }
+];
+
+export const DEFAULT_UNITS = [
+  {
+    "id": "melee",
+    "name": "Sword",
+    "icon": "melee.png",
+    "combatType": "melee",
+    "tier": 1,
+    "cost": 10,
+    "range": 1,
+    "baseDamage": 6,
+    "attackSpeed": 4,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 60,
+      "strength": 60,
+      "defence": 60,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "range",
+    "name": "Bow",
+    "icon": "range.png",
+    "combatType": "range",
+    "tier": 1,
+    "cost": 10,
+    "range": 2,
+    "baseDamage": 5,
+    "attackSpeed": 5,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 60,
+      "magic": 1,
+      "range": 60,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "magic",
+    "name": "Staff",
+    "icon": "magic.png",
+    "combatType": "magic",
+    "tier": 1,
+    "cost": 10,
+    "range": 3,
+    "baseDamage": 6,
+    "attackSpeed": 5,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 60,
+      "magic": 60,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "woodcutter",
+    "name": "Woodcutter",
+    "icon": "rune_axe.png",
+    "combatType": "melee",
+    "tier": 1,
+    "cost": 10,
+    "range": 1,
+    "baseDamage": 3,
+    "attackSpeed": 5,
+    "resourceTarget": "tree",
+    "resourceDamage": 10,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 40,
+      "strength": 10,
+      "defence": 20,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 50
+    }
+  },
+  {
+    "id": "miner",
+    "name": "Miner",
+    "icon": "rune_pickaxe.png",
+    "combatType": "melee",
+    "tier": 1,
+    "cost": 10,
+    "range": 1,
+    "baseDamage": 3,
+    "attackSpeed": 5,
+    "resourceTarget": "rock",
+    "resourceDamage": 10,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 40,
+      "strength": 10,
+      "defence": 20,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 50
+    }
+  },
+  {
+    "id": "ancient_staff",
+    "name": "Ancient Staff",
+    "icon": "ancient_staff.png",
+    "combatType": "magic",
+    "tier": 2,
+    "cost": 25,
+    "range": 3,
+    "baseDamage": 8,
+    "attackSpeed": 5,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "aoeRadius,accuracyPenaltyVsRange",
+    "notes": "Hard-coded freeze/splash behavior is preserved by the game for this ID.",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 60,
+      "magic": 75,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "dragon_crossbow",
+    "name": "Dragon Crossbow",
+    "icon": "dragon_crossbow.png",
+    "combatType": "range",
+    "tier": 2,
+    "cost": 25,
+    "range": 2,
+    "baseDamage": 9,
+    "attackSpeed": 4,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 75,
+      "magic": 1,
+      "range": 75,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "dragon_claws",
+    "name": "Dragon Claws",
+    "icon": "dragon_claws.png",
+    "combatType": "melee",
+    "tier": 3,
+    "cost": 30,
+    "range": 1,
+    "baseDamage": 10,
+    "attackSpeed": 4,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "clawRegularAttacksRequired",
+    "notes": "Hard-coded special behavior is preserved by the game for this ID.",
+    "stats": {
+      "attack": 60,
+      "strength": 85,
+      "defence": 30,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "dark_bow_pure",
+    "name": "Dark Bow Pure",
+    "icon": "dark_bow.png",
+    "combatType": "range",
+    "tier": 3,
+    "cost": 30,
+    "range": 5,
+    "baseDamage": 12,
+    "attackSpeed": 9,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "doubleShot",
+    "notes": "Hard-coded special behavior is preserved by the game for this ID.",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 1,
+      "magic": 1,
+      "range": 95,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "voidwaker_rusher",
+    "name": "Voidwaker Rusher",
+    "icon": "voidwaker.png",
+    "combatType": "melee",
+    "tier": 3,
+    "cost": 30,
+    "range": 1,
+    "baseDamage": 12,
+    "attackSpeed": 4,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "guaranteedAttacks,guaranteedMinPct,guaranteedMaxPct",
+    "notes": "Hard-coded special behavior is preserved by the game for this ID.",
+    "stats": {
+      "attack": 75,
+      "strength": 75,
+      "defence": 1,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "dharoks",
+    "name": "Dharok's Greataxe",
+    "icon": "dharoks.png",
+    "combatType": "melee",
+    "tier": 3,
+    "cost": 35,
+    "range": 1,
+    "baseDamage": 10,
+    "attackSpeed": 5,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "dharokHpScale",
+    "notes": "Hard-coded missing-HP scaling is preserved by the game for this ID.",
+    "stats": {
+      "attack": 70,
+      "strength": 70,
+      "defence": 70,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "dinhs_bulwark",
+    "name": "Dinh's Bulwark",
+    "icon": "dinhs_bulwark.png",
+    "combatType": "melee",
+    "tier": 2,
+    "cost": 25,
+    "range": 1,
+    "baseDamage": 4,
+    "attackSpeed": 5,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 75,
+      "strength": 35,
+      "defence": 95,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "heavy_ballista",
+    "name": "Heavy Ballista",
+    "icon": "heavy_ballista.png",
+    "combatType": "range",
+    "tier": 2,
+    "cost": 25,
+    "range": 3,
+    "baseDamage": 14,
+    "attackSpeed": 7,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 75,
+      "magic": 1,
+      "range": 85,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "noxious_halberd",
+    "name": "Noxious Halberd",
+    "icon": "noxious_halberd.png",
+    "combatType": "melee",
+    "tier": 2,
+    "cost": 25,
+    "range": 2,
+    "baseDamage": 9,
+    "attackSpeed": 5,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "",
+    "notes": "",
+    "stats": {
+      "attack": 75,
+      "strength": 75,
+      "defence": 75,
+      "magic": 1,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  },
+  {
+    "id": "volatile_nightmare_staff",
+    "name": "Volatile Staff",
+    "icon": "volatile_nightmare_staff.png",
+    "combatType": "magic",
+    "tier": 2,
+    "cost": 25,
+    "range": 3,
+    "baseDamage": 10,
+    "attackSpeed": 6,
+    "resourceTarget": "",
+    "resourceDamage": 0,
+    "buyable": true,
+    "effectKey": "volatileChance,volatileMultiplier",
+    "notes": "Hard-coded volatile proc is preserved by the game for this ID.",
+    "stats": {
+      "attack": 1,
+      "strength": 1,
+      "defence": 75,
+      "magic": 75,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    }
+  }
+];
+
+export function makeDefaultContent() {
+  return {
+    schemaVersion: CONTENT_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    items: DEFAULT_ITEMS.map((item) => ({ ...item, bonuses: { ...(item.bonuses || {}) } })),
+    npcs: DEFAULT_NPCS.map((npc) => ({ ...npc, stats: { ...(npc.stats || {}) }, drops: (npc.drops || []).map((drop) => ({ ...drop })) })),
+    units: DEFAULT_UNITS.map((unit) => ({ ...unit, stats: { ...(unit.stats || {}) } })),
+  };
+}

@@ -17,12 +17,44 @@ import {
   limitToFirst,
 } from "firebase/database";
 import { firebaseConfig } from "./firebaseConfig";
+import ContentManager from "./ContentManager.jsx";
+import { makeDefaultContent } from "./content/defaultContent.js";
 import "./styles.css";
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, centerSize: 5, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
+
+const CONTENT_MANAGER_STORAGE_KEY = "quadrants_content_manager_draft_v2";
+
+function cleanContentId(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function loadGameContentPack() {
+  const fallback = makeDefaultContent();
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return fallback;
+    const raw = window.localStorage.getItem(CONTENT_MANAGER_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return {
+      ...fallback,
+      ...parsed,
+      items: Array.isArray(parsed.items) ? parsed.items : fallback.items,
+      npcs: Array.isArray(parsed.npcs) ? parsed.npcs : fallback.npcs,
+      units: Array.isArray(parsed.units) ? parsed.units : fallback.units,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+const GAME_CONTENT_PACK = loadGameContentPack();
+
+const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, centerSize: 5, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, npcSpawnSettings: {}, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
+const CPU_PLAYER_PREFIX = "cpu_";
+const CPU_READY_TEXT = "CPU ready";
 const BASE_ZONE_SIZE = 3;
 const LARGE_BASE_ZONE_SIZE = 5;
 const BASE_ZONE_INSET = 1;
@@ -40,6 +72,9 @@ const RESULTS_LOBBY_CLEANUP_HOURS = 6;
 const LOBBY_CLEANUP_THROTTLE_MS = 5 * 60 * 1000;
 const RECENT_PRESENCE_GRACE_MS = 2 * 60 * 1000;
 const LOBBY_CLEANUP_BATCH_LIMIT = 50;
+const SIM_STALE_WARNING_MS = 9000;
+const SIM_STALE_HOST_TAKEOVER_MS = 18000;
+const RESYNC_VOTE_WINDOW_MS = 90 * 1000;
 const MAX_LEVEL = 99;
 const BUILD_PHASE_GOLD_RESERVE = 10;
 const DEFEND_RADIUS = 4;
@@ -65,6 +100,9 @@ const EQUIPMENT_SLOT_META = {
 };
 const EMPTY_GEAR_BONUSES = { stab: 0, slash: 0, crush: 0, magic: 0, range: 0, defenceStab: 0, defenceSlash: 0, defenceCrush: 0, defenceMagic: 0, defenceRange: 0, meleeStrength: 0, rangedStrength: 0, magicDamage: 0, prayer: 0 };
 const NPC_SPAWN_INTERVAL = 60;
+const MIN_NPC_SPAWN_INTERVAL = 5;
+const MAX_NPC_SPAWN_INTERVAL = 3600;
+const JAD_SPECIAL_INTERVAL = 15;
 const GOBLIN_LOOT_TABLE = [
   { type: "gold", min: 1, max: 10, weight: 80 },
   { type: "item", itemId: "bronze_med_helm", weight: 20 },
@@ -77,8 +115,8 @@ const HILL_GIANT_DROP_TABLE = [
   { type: "item", itemId: "ore", min: 1, max: 5, chance: 1 / 20 },
 ];
 const HILL_GIANT_ALWAYS_DROP_ITEMS = [{ itemId: "big_bones", qty: 1 }];
-const GEAR_ITEMS = {
-  cape_of_skulls: { id: "cape_of_skulls", name: "Cape of Skulls", slot: "cape", cost: 50, icon: "cape_of_skulls.png", bonuses: { defenceStab: 1, defenceSlash: 1, defenceCrush: 1, defenceMagic: 1, defenceRange: 1 } },
+const LEGACY_GEAR_ITEMS = {
+  cape_of_skulls: { id: "cape_of_skulls", name: "Cape of Skulls", slot: "cape", cost: 50, icon: "cape_of_skulls.png", shopForSale: true, shopStock: 0, bonuses: { defenceStab: 1, defenceSlash: 1, defenceCrush: 1, defenceMagic: 1, defenceRange: 1 } },
   bronze_med_helm: { id: "bronze_med_helm", name: "Bronze Med Helm", slot: "helmet", cost: 5, icon: "bronze_med_helm.png", bonuses: { defenceStab: 1, defenceSlash: 1, defenceCrush: 1, defenceRange: 1 } },
   bones: { id: "bones", name: "Bones", slot: "none", cost: 1, sellValue: 0, icon: "bones.png", stackable: true, consumable: "prayerXp", prayerXp: 3, bonuses: {} },
   big_bones: { id: "big_bones", name: "Big Bones", slot: "none", cost: 15, sellValue: 15, icon: "big_bones.png", stackable: true, consumable: "prayerXp", prayerXp: 4.5, bonuses: {} },
@@ -101,7 +139,54 @@ const GEAR_ITEMS = {
   bronze_arrows: { id: "bronze_arrows", name: "Bronze Arrows", slot: "ammo", cost: 8, icon: "ammo_slot.png", bonuses: { range: 2, rangedStrength: 5 } },
   recoil_ring: { id: "recoil_ring", name: "Ring of Recoil", slot: "ring", cost: 18, icon: "ring_slot.png", bonuses: { defenceStab: 3, defenceSlash: 3, defenceCrush: 3, defenceMagic: 3, defenceRange: 3, meleeStrength: 2, rangedStrength: 2, magicDamage: 1 } },
 };
-const SHOP_GEAR_ITEM_IDS = ["cape_of_skulls"];
+
+function itemDefsFromContentPack(content = GAME_CONTENT_PACK) {
+  const out = {};
+  for (const raw of content.items || []) {
+    const id = cleanContentId(raw.id || raw.name);
+    if (!id) continue;
+    const cost = Math.max(0, Math.round(Number(raw.cost || 0)));
+    const type = raw.type || "gear";
+    out[id] = {
+      id,
+      name: String(raw.name || id),
+      slot: raw.slot || "none",
+      type,
+      cost,
+      sellValue: raw.sellValue == null ? Math.floor(cost / 2) : Math.max(0, Math.round(Number(raw.sellValue) || 0)),
+      icon: raw.icon || `${id}.png`,
+      stackable: type === "gear" ? false : Boolean(raw.stackable),
+      twoHanded: Boolean(raw.twoHanded),
+      consumable: raw.consumable || "",
+      prayerXp: Number(raw.prayerXp || 0),
+      effectKey: raw.effectKey || "",
+      shopForSale: Boolean(raw.shopForSale || raw.forSaleInShop),
+      shopStock: Math.max(0, Math.round(Number(raw.shopStock ?? raw.quantityStocked ?? 0) || 0)),
+      bonuses: { ...(raw.bonuses || {}) },
+    };
+  }
+  return out;
+}
+
+const GEAR_ITEMS = { ...LEGACY_GEAR_ITEMS, ...itemDefsFromContentPack(GAME_CONTENT_PACK) };
+const LEGACY_SHOP_GEAR_ITEM_IDS = ["cape_of_skulls"];
+function shopItemEntries(game = null) {
+  const ids = new Set([...LEGACY_SHOP_GEAR_ITEM_IDS]);
+  for (const item of Object.values(GEAR_ITEMS)) {
+    if (item?.shopForSale) ids.add(item.id);
+  }
+  return [...ids]
+    .map((itemId) => itemById(itemId))
+    .filter(Boolean)
+    .map((item) => {
+      const stockTotal = Math.max(0, Math.round(Number(item.shopStock || 0)));
+      const purchased = Math.max(0, Math.round(Number(game?.shopPurchases?.[item.id] || 0)));
+      const remaining = stockTotal <= 0 ? Infinity : Math.max(0, stockTotal - purchased);
+      return { item, itemId: item.id, price: Number(item.cost || 0), stockTotal, purchased, remaining, infinite: stockTotal <= 0 };
+    })
+    .filter((entry) => entry.remaining > 0)
+    .sort((a, b) => (a.price - b.price) || a.item.name.localeCompare(b.item.name));
+}
 const DEFAULT_TWO_HANDED_STYLES = new Set(["dinhs_bulwark", "noxious_halberd", "dragon_claws", "dharoks", "heavy_ballista", "dark_bow_pure"]);
 const RESOURCE_HITPOINTS = { tree: 30, rock: 30 };
 const CLASSIC_TEAMS = ["red", "green", "blue", "purple"];
@@ -116,7 +201,7 @@ const DEFAULT_TEAM_ALLIANCES = { red: "warm", orange: "warm", yellow: "warm", gr
 const GAME_MODES = {
   classic: { name: "Classic Base Siege", description: "Destroy enemy bases and clean up remaining units." },
   capture_flag: { name: "Capture the Flag", description: "Touch an enemy base to grab its flag, then return to your base to score." },
-  king_hill: { name: "King of the Hill", description: "Control the center hill uncontested until your team reaches the hold timer." },
+  king_hill: { name: "King of the Hill", description: "Score while your team has the most units in the center hill. Ties for first contest the hill." },
 };
 const MAP_TEMPLATES = {
   classic: { name: "Classic Quadrants" },
@@ -148,10 +233,41 @@ const PHASES = {
 const STAT_KEYS = ["attack", "strength", "defence", "magic", "range", "prayer", "hitpoints"];
 const STAT_SHORT = { attack: "Atk", strength: "Str", defence: "Def", magic: "Mag", range: "Rng", prayer: "Pray", hitpoints: "HP" };
 
+const PRAYER_DEFS = [
+  { id: "thick_skin", name: "Thick Skin", level: 1, icon: "prayers/Thick_Skin.png", drainSeconds: 36, categories: ["defence"], boosts: { defence: 1.05 }, effect: "+5% Defence" },
+  { id: "burst_of_strength", name: "Burst of Strength", level: 4, icon: "prayers/Burst_of_Strength.png", drainSeconds: 36, categories: ["strength"], boosts: { strength: 1.05 }, effect: "+5% Strength" },
+  { id: "clarity_of_thought", name: "Clarity of Thought", level: 7, icon: "prayers/Clarity_of_Thought.png", drainSeconds: 36, categories: ["attack"], boosts: { attack: 1.05 }, effect: "+5% Attack" },
+  { id: "sharp_eye", name: "Sharp Eye", level: 8, icon: "prayers/Sharp_Eye.png", drainSeconds: 36, categories: ["range"], boosts: { range: 1.05, rangedStrength: 1.05 }, effect: "+5% Ranged attack and Strength" },
+  { id: "mystic_will", name: "Mystic Will", level: 9, icon: "prayers/Mystic_Will.png", drainSeconds: 36, categories: ["magic"], boosts: { magic: 1.05, defenceMagic: 1.05 }, effect: "+5% Magic Attack and Defence" },
+  { id: "rock_skin", name: "Rock Skin", level: 10, icon: "prayers/Rock_Skin.png", drainSeconds: 6, categories: ["defence"], boosts: { defence: 1.10 }, effect: "+10% Defence" },
+  { id: "superhuman_strength", name: "Superhuman Strength", level: 13, icon: "prayers/Superhuman_Strength.png", drainSeconds: 6, categories: ["strength"], boosts: { strength: 1.10 }, effect: "+10% Strength" },
+  { id: "improved_reflexes", name: "Improved Reflexes", level: 16, icon: "prayers/Improved_Reflexes.png", drainSeconds: 6, categories: ["attack"], boosts: { attack: 1.10 }, effect: "+10% Attack" },
+  { id: "hawk_eye", name: "Hawk Eye", level: 26, icon: "prayers/Hawk_Eye.png", drainSeconds: 6, categories: ["range"], boosts: { range: 1.10, rangedStrength: 1.10 }, effect: "+10% Ranged attack and Strength" },
+  { id: "mystic_lore", name: "Mystic Lore", level: 27, icon: "prayers/Mystic_Lore.png", drainSeconds: 6, categories: ["magic"], boosts: { magic: 1.10, defenceMagic: 1.10, magicDamage: 1.01 }, effect: "+10% Magic Attack/Defence, +1% damage" },
+  { id: "steel_skin", name: "Steel Skin", level: 28, icon: "prayers/Steel_Skin.png", drainSeconds: 3, categories: ["defence"], boosts: { defence: 1.15 }, effect: "+15% Defence" },
+  { id: "ultimate_strength", name: "Ultimate Strength", level: 31, icon: "prayers/Ultimate_Strength.png", drainSeconds: 3, categories: ["strength"], boosts: { strength: 1.15 }, effect: "+15% Strength" },
+  { id: "incredible_reflexes", name: "Incredible Reflexes", level: 34, icon: "prayers/Incredible_Reflexes.png", drainSeconds: 3, categories: ["attack"], boosts: { attack: 1.15 }, effect: "+15% Attack" },
+  { id: "protect_from_magic", name: "Protect from Magic", level: 37, icon: "prayers/Protect_from_Magic.png", drainSeconds: 3, categories: ["overhead"], overhead: true, protectStyle: "magic", effect: "100% NPC / 40% player Magic protection" },
+  { id: "protect_from_missiles", name: "Protect from Missiles", level: 40, icon: "prayers/Protect_from_Missiles.png", drainSeconds: 3, categories: ["overhead"], overhead: true, protectStyle: "range", effect: "100% NPC / 40% player Ranged protection" },
+  { id: "protect_from_melee", name: "Protect from Melee", level: 43, icon: "prayers/Protect_from_Melee.png", drainSeconds: 3, categories: ["overhead"], overhead: true, protectStyle: "melee", effect: "100% NPC / 40% player Melee protection" },
+  { id: "eagle_eye", name: "Eagle Eye", level: 44, icon: "prayers/Eagle_Eye.png", drainSeconds: 3, categories: ["range"], boosts: { range: 1.15, rangedStrength: 1.15 }, effect: "+15% Ranged attack and Strength" },
+  { id: "mystic_might", name: "Mystic Might", level: 45, icon: "prayers/Mystic_Might.png", drainSeconds: 3, categories: ["magic"], boosts: { magic: 1.15, defenceMagic: 1.15, magicDamage: 1.02 }, effect: "+15% Magic Attack/Defence, +2% damage" },
+  { id: "retribution", name: "Retribution", level: 46, icon: "prayers/Retribution.png", drainSeconds: 12, categories: ["overhead"], overhead: true, special: "retribution", effect: "On death, damages enemies in a 3x3 radius" },
+  { id: "redemption", name: "Redemption", level: 49, icon: "prayers/Redemption.png", drainSeconds: 6, categories: ["overhead"], overhead: true, special: "redemption", effect: "Prevents death once, heals 25% HP, drains Prayer" },
+  { id: "smite", name: "Smite", level: 52, icon: "prayers/Smite.png", drainSeconds: 2, categories: ["overhead"], overhead: true, special: "smite", effect: "Drains enemy Prayer by 25% of damage dealt" },
+  { id: "chivalry", name: "Chivalry", level: 60, icon: "prayers/Chivalry.png", drainSeconds: 1.5, categories: ["attack", "strength", "defence"], boosts: { attack: 1.15, strength: 1.18, defence: 1.20 }, effect: "+15% Attack, +18% Strength, +20% Defence" },
+  { id: "deadeye", name: "Deadeye", level: 62, icon: "prayers/Deadeye.png", drainSeconds: 3, categories: ["range", "defence"], boosts: { range: 1.18, rangedStrength: 1.18, defence: 1.05 }, effect: "+18% Ranged attack/Strength, +5% Defence" },
+  { id: "mystic_vigour", name: "Mystic Vigour", level: 63, icon: "prayers/Mystic_Vigour.png", drainSeconds: 3, categories: ["magic", "defence"], boosts: { magic: 1.18, defenceMagic: 1.18, defence: 1.05, magicDamage: 1.03 }, effect: "+18% Magic, +5% Defence, +3% damage" },
+  { id: "piety", name: "Piety", level: 70, icon: "prayers/Piety.png", drainSeconds: 1.5, categories: ["attack", "strength", "defence"], boosts: { attack: 1.20, strength: 1.23, defence: 1.25 }, effect: "+20% Attack, +23% Strength, +25% Defence" },
+  { id: "rigour", name: "Rigour", level: 74, icon: "prayers/Rigour.png", drainSeconds: 1.5, categories: ["range", "defence"], boosts: { range: 1.20, rangedStrength: 1.23, defence: 1.25 }, effect: "+20% Ranged attack, +23% Strength, +25% Defence" },
+  { id: "augury", name: "Augury", level: 77, icon: "prayers/Augury.png", drainSeconds: 1.5, categories: ["magic", "defence"], boosts: { magic: 1.25, defenceMagic: 1.25, defence: 1.25, magicDamage: 1.04 }, effect: "+25% Magic/Defence, +4% damage" },
+];
+const PRAYER_BY_ID = Object.fromEntries(PRAYER_DEFS.map((prayer) => [prayer.id, prayer]));
+
 const BASE = import.meta.env.BASE_URL || "/";
 const asset = (path) => `${BASE}assets/${path}`;
 
-const STYLE = {
+const LEGACY_STYLE = {
   goblin: {
     name: "Goblin",
     file: "goblin.png",
@@ -387,6 +503,58 @@ const STYLE = {
   },
 };
 
+function styleDefsFromContentPack(content = GAME_CONTENT_PACK) {
+  const out = {};
+  for (const raw of content.npcs || []) {
+    const id = cleanContentId(raw.id || raw.name);
+    if (!id) continue;
+    const legacy = LEGACY_STYLE[id] || {};
+    const attackTicks = Math.max(1, Math.round(Number(raw.attackSpeed ?? legacy.attackTicks ?? 4)));
+    const hp = Math.max(1, Math.round(Number(raw.hp ?? raw.stats?.hitpoints ?? legacy.baseStats?.hitpoints ?? 30)));
+    out[id] = {
+      ...legacy,
+      name: raw.name || legacy.name || id,
+      file: raw.icon || legacy.file || `${id}.png`,
+      combatType: raw.combatType || legacy.combatType || "melee",
+      tier: 0,
+      cost: 0,
+      range: Math.max(1, Math.round(Number(raw.attackRange ?? legacy.range ?? 1))),
+      size: Math.max(1, Math.round(Number(raw.size ?? legacy.size ?? 1))),
+      baseDamage: Math.max(0, Math.round(Number(raw.baseDamage ?? legacy.baseDamage ?? 1))),
+      attackTicks,
+      cooldown: attackTicks * TICK_SECONDS,
+      baseStats: { ...(legacy.baseStats || {}), ...(raw.stats || {}), hitpoints: hp },
+      npc: true,
+      effectKey: raw.effectKey || legacy.effectKey || "",
+    };
+  }
+  for (const raw of content.units || []) {
+    const id = cleanContentId(raw.id || raw.name);
+    if (!id) continue;
+    const legacy = LEGACY_STYLE[id] || {};
+    const attackTicks = Math.max(1, Math.round(Number(raw.attackSpeed ?? legacy.attackTicks ?? 4)));
+    out[id] = {
+      ...legacy,
+      name: raw.name || legacy.name || id,
+      file: raw.icon || legacy.file || `${id}.png`,
+      combatType: raw.combatType || legacy.combatType || "melee",
+      tier: Math.max(1, Math.round(Number(raw.tier ?? legacy.tier ?? 1))),
+      cost: Math.max(0, Math.round(Number(raw.cost ?? legacy.cost ?? 10))),
+      range: Math.max(1, Math.round(Number(raw.range ?? legacy.range ?? 1))),
+      baseDamage: Math.max(0, Math.round(Number(raw.baseDamage ?? legacy.baseDamage ?? 1))),
+      attackTicks,
+      cooldown: attackTicks * TICK_SECONDS,
+      resourceTarget: raw.resourceTarget || legacy.resourceTarget || undefined,
+      resourceDamage: raw.resourceDamage == null ? legacy.resourceDamage : Math.max(0, Math.round(Number(raw.resourceDamage) || 0)),
+      baseStats: { ...(legacy.baseStats || {}), ...(raw.stats || {}) },
+      effectKey: raw.effectKey || legacy.effectKey || "",
+    };
+  }
+  return out;
+}
+
+const STYLE = { ...LEGACY_STYLE, ...styleDefsFromContentPack(GAME_CONTENT_PACK), flag_weapon: LEGACY_STYLE.flag_weapon };
+
 const DEFAULT_UNIT_STYLE_ID = "melee";
 
 function safeStyleId(styleId, fallback = DEFAULT_UNIT_STYLE_ID) {
@@ -400,10 +568,17 @@ function styleDefinition(styleId, fallback = DEFAULT_UNIT_STYLE_ID) {
 function normalizeRuntimeUnit(unit) {
   if (!unit) return unit;
   const safeStyle = safeStyleId(unit.style);
-  return unit.style === safeStyle ? unit : { ...unit, style: safeStyle, name: normalizeUnitName(unit.name, styleDefinition(safeStyle).name || "Unit") };
+  const normalized = unit.style === safeStyle ? { ...unit } : { ...unit, style: safeStyle, name: normalizeUnitName(unit.name, styleDefinition(safeStyle).name || "Unit") };
+  if (normalized.team !== "npc") {
+    const maxPray = maxPrayerPoints(normalized);
+    if (normalized.prayerPoints == null || !Number.isFinite(Number(normalized.prayerPoints))) normalized.prayerPoints = maxPray;
+    normalized.prayerPoints = Math.max(0, Math.min(maxPray, Number(normalized.prayerPoints)));
+    normalized.activePrayers = prayerIds(normalized).filter((id) => prayerUnlocked(normalized, id));
+  }
+  return normalized;
 }
 
-const MINION_STYLE_IDS = [
+const LEGACY_MINION_STYLE_IDS = [
   "melee",
   "range",
   "magic",
@@ -420,6 +595,21 @@ const MINION_STYLE_IDS = [
   "noxious_halberd",
   "volatile_nightmare_staff",
 ];
+
+const CONTENT_MINION_STYLE_IDS = (GAME_CONTENT_PACK.units || [])
+  .filter((unit) => unit && unit.buyable !== false)
+  .map((unit) => cleanContentId(unit.id))
+  .filter((id) => id && STYLE[id] && !STYLE[id].npc);
+
+const MINION_STYLE_IDS = Array.from(new Set([...LEGACY_MINION_STYLE_IDS, ...CONTENT_MINION_STYLE_IDS]))
+  .filter((id) => STYLE[id] && !STYLE[id].npc && id !== "flag_weapon");
+
+const CONTENT_NPC_STYLE_IDS = (GAME_CONTENT_PACK.npcs || [])
+  .map((npc) => cleanContentId(npc?.id || npc?.name))
+  .filter((id) => id && STYLE[id]?.npc);
+
+const NPC_STYLE_IDS = Array.from(new Set([...CONTENT_NPC_STYLE_IDS, "goblin", "hill_giant"]))
+  .filter((id) => STYLE[id]?.npc);
 
 const TILE = {
   empty: { name: "Void", icon: "", cost: 0 },
@@ -479,6 +669,27 @@ function activeTeams(setup = DEFAULT_SETUP) {
   return ["red", "blue"];
 }
 
+function isCpuPlayer(player) {
+  return Boolean(player?.isCpu || String(player?.id || "").startsWith(CPU_PLAYER_PREFIX));
+}
+
+function cpuPlayerIdForTeam(team) {
+  return `${CPU_PLAYER_PREFIX}${team}`;
+}
+
+function makeCpuPlayer(team, now = Date.now()) {
+  const meta = TEAM_META[team] || { name: team };
+  return {
+    id: cpuPlayerIdForTeam(team),
+    name: `CPU ${meta.name}`,
+    team,
+    isCpu: true,
+    connected: true,
+    joinedAt: now,
+    lastSeen: now,
+  };
+}
+
 function validAllianceIds() {
   return TEAM_MODE_ALLIANCES.map((alliance) => alliance.id);
 }
@@ -525,27 +736,186 @@ function hillGiantLootChanceRows() {
   return HILL_GIANT_DROP_TABLE.map((row) => ({ ...row, chance: Number(row.chance || 0) }));
 }
 
+function contentNpcDef(styleId) {
+  const clean = cleanContentId(styleId);
+  return (GAME_CONTENT_PACK.npcs || []).find((entry) => cleanContentId(entry?.id || entry?.name) === clean) || null;
+}
+
+function clampNpcSpawnInterval(value, fallback = NPC_SPAWN_INTERVAL) {
+  const raw = Number(value);
+  const seconds = Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  return Math.max(MIN_NPC_SPAWN_INTERVAL, Math.min(MAX_NPC_SPAWN_INTERVAL, Math.round(seconds)));
+}
+
+function clampNpcMaxSpawns(value, fallback = 0) {
+  const raw = Number(value);
+  const count = Number.isFinite(raw) ? raw : fallback;
+  return Math.max(0, Math.min(999, Math.round(count)));
+}
+
+function clampNpcMaxAlive(value, fallback = 0) {
+  const raw = Number(value);
+  const count = Number.isFinite(raw) ? raw : fallback;
+  return Math.max(0, Math.min(999, Math.round(count)));
+}
+
+function normalizeNpcSpawnSettings(value = {}) {
+  const out = {};
+  const input = value && typeof value === "object" ? value : {};
+  for (const style of NPC_STYLE_IDS) {
+    const raw = input[style] || {};
+    const def = contentNpcDef(style) || {};
+    const legacyAmount = style === "goblin" ? DEFAULT_SETUP.goblinSpawnAmount : style === "hill_giant" ? DEFAULT_SETUP.hillGiantSpawnAmount : 0;
+    const legacyInterval = style === "goblin" ? DEFAULT_SETUP.goblinSpawnInterval : style === "hill_giant" ? DEFAULT_SETUP.hillGiantSpawnInterval : NPC_SPAWN_INTERVAL;
+    const amount = Math.max(0, Math.min(20, Math.round(Number(raw.amount ?? raw.spawnAmount ?? def.spawnAmount ?? legacyAmount) || 0)));
+    const interval = clampNpcSpawnInterval(raw.interval ?? raw.spawnInterval ?? def.spawnInterval, legacyInterval);
+    const maxSpawns = clampNpcMaxSpawns(raw.maxSpawns ?? raw.maxPerMatch ?? raw.spawnMax ?? def.maxSpawns ?? def.maxPerMatch ?? 0, 0);
+    const maxAlive = clampNpcMaxAlive(raw.maxAlive ?? raw.maxOnMap ?? raw.allowedOnMap ?? def.maxAlive ?? def.maxOnMap ?? amount, amount);
+    out[style] = { amount, interval, maxSpawns, maxAlive };
+  }
+  return out;
+}
+
+function npcSpawnSettingFor(setup = DEFAULT_SETUP, style) {
+  const settings = setup?.npcSpawnSettings || {};
+  const direct = settings?.[style];
+  const def = contentNpcDef(style) || {};
+  if (direct && typeof direct === "object") {
+    return {
+      amount: Math.max(0, Math.min(20, Math.round(Number(direct.amount ?? direct.spawnAmount ?? 0) || 0))),
+      interval: clampNpcSpawnInterval(direct.interval ?? direct.spawnInterval ?? def.spawnInterval, NPC_SPAWN_INTERVAL),
+      maxSpawns: clampNpcMaxSpawns(direct.maxSpawns ?? direct.maxPerMatch ?? direct.spawnMax ?? def.maxSpawns ?? def.maxPerMatch ?? 0, 0),
+      maxAlive: clampNpcMaxAlive(direct.maxAlive ?? direct.maxOnMap ?? direct.allowedOnMap ?? def.maxAlive ?? def.maxOnMap ?? direct.amount ?? direct.spawnAmount ?? 0, direct.amount ?? direct.spawnAmount ?? 0),
+    };
+  }
+  if (style === "goblin") {
+    return {
+      amount: Math.max(0, Math.min(20, Math.round(Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? def.spawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount) || 0))),
+      interval: clampNpcSpawnInterval(setup.goblinSpawnInterval ?? setup.npcSpawnInterval ?? def.spawnInterval, DEFAULT_SETUP.goblinSpawnInterval),
+      maxSpawns: clampNpcMaxSpawns(def.maxSpawns ?? def.maxPerMatch ?? 0, 0),
+      maxAlive: clampNpcMaxAlive(def.maxAlive ?? def.maxOnMap ?? setup.goblinSpawnMaxAlive ?? setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? def.spawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount, setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? def.spawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount),
+    };
+  }
+  if (style === "hill_giant") {
+    return {
+      amount: Math.max(0, Math.min(20, Math.round(Number(setup.hillGiantSpawnAmount ?? def.spawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount) || 0))),
+      interval: clampNpcSpawnInterval(setup.hillGiantSpawnInterval ?? def.spawnInterval, DEFAULT_SETUP.hillGiantSpawnInterval),
+      maxSpawns: clampNpcMaxSpawns(def.maxSpawns ?? def.maxPerMatch ?? 0, 0),
+      maxAlive: clampNpcMaxAlive(def.maxAlive ?? def.maxOnMap ?? setup.hillGiantSpawnMaxAlive ?? setup.hillGiantSpawnAmount ?? def.spawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount, setup.hillGiantSpawnAmount ?? def.spawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount),
+    };
+  }
+  return {
+    amount: Math.max(0, Math.min(20, Math.round(Number(def.spawnAmount) || 0))),
+    interval: clampNpcSpawnInterval(def.spawnInterval, NPC_SPAWN_INTERVAL),
+    maxSpawns: clampNpcMaxSpawns(def.maxSpawns ?? def.maxPerMatch ?? 0, 0),
+    maxAlive: clampNpcMaxAlive(def.maxAlive ?? def.maxOnMap ?? def.spawnAmount ?? 0, def.spawnAmount ?? 0),
+  };
+}
+
 function npcSpawnAmountFor(setup, style) {
-  if (style === "goblin") return Math.max(0, Math.min(10, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount) || 0));
-  if (style === "hill_giant") return Math.max(0, Math.min(5, Number(setup.hillGiantSpawnAmount) || 0));
-  return 0;
+  return npcSpawnSettingFor(setup, style).amount;
 }
 
 function npcSpawnIntervalFor(setup, style) {
-  if (style === "goblin") return Math.max(10, Math.min(600, Number(setup.goblinSpawnInterval ?? setup.npcSpawnInterval) || DEFAULT_SETUP.goblinSpawnInterval));
-  if (style === "hill_giant") return Math.max(10, Math.min(600, Number(setup.hillGiantSpawnInterval) || DEFAULT_SETUP.hillGiantSpawnInterval));
-  return NPC_SPAWN_INTERVAL;
+  return npcSpawnSettingFor(setup, style).interval;
+}
+
+function npcSpawnMaxFor(setup, style) {
+  return npcSpawnSettingFor(setup, style).maxSpawns || 0;
+}
+
+function npcSpawnMaxAliveFor(setup, style) {
+  return npcSpawnSettingFor(setup, style).maxAlive || 0;
 }
 
 function npcSpawnConfigs(setup = DEFAULT_SETUP) {
-  return [
-    { style: "goblin", amount: npcSpawnAmountFor(setup, "goblin"), interval: npcSpawnIntervalFor(setup, "goblin") },
-    { style: "hill_giant", amount: npcSpawnAmountFor(setup, "hill_giant"), interval: npcSpawnIntervalFor(setup, "hill_giant") },
-  ].filter((cfg) => cfg.amount > 0 && STYLE[cfg.style]?.npc);
+  return NPC_STYLE_IDS
+    .map((style) => {
+      const setting = npcSpawnSettingFor(setup, style);
+      return { style, amount: setting.amount, interval: setting.interval, maxSpawns: setting.maxSpawns || 0, maxAlive: setting.maxAlive || 0 };
+    })
+    .filter((cfg) => cfg.amount > 0 && STYLE[cfg.style]?.npc);
+}
+
+function inferredNpcRespawnCount(spawnedBodies, amountPerSpawn) {
+  const spawned = Math.max(0, Math.round(Number(spawnedBodies) || 0));
+  const amount = Math.max(1, Math.round(Number(amountPerSpawn) || 1));
+  return spawned > 0 ? Math.ceil(spawned / amount) : 0;
+}
+
+function npcObservedSpawnStats(game = {}, cfg, liveUnitsOverride = null) {
+  const liveUnits = liveUnitsOverride || arrayFromObject(game.units);
+  const archivedUnits = arrayFromObject(game.unitArchive);
+  const queuedUnits = arrayFromObject(game.respawnQueue);
+  const byId = new Map();
+  for (const unit of [...liveUnits, ...archivedUnits, ...queuedUnits]) {
+    if (!unit || unit.team !== "npc" || unit.style !== cfg.style) continue;
+    byId.set(unit.id || `${cfg.style}_${byId.size}`, unit);
+  }
+  const observedBodies = byId.size;
+  const waveIds = new Set();
+  for (const unit of byId.values()) {
+    const waveId = unit.spawnWaveId || unit.npcSpawnWaveId;
+    if (waveId) waveIds.add(waveId);
+  }
+  const observedRespawns = waveIds.size || inferredNpcRespawnCount(observedBodies, cfg.amount);
+  const recordedBodies = Math.max(0, Math.round(Number(game.npcSpawnedTotals?.[cfg.style] || 0)));
+  const recordedRespawns = Math.max(0, Math.round(Number(game.npcRespawnTotals?.[cfg.style] || 0)));
+  const spawned = Math.max(recordedBodies, observedBodies);
+  const respawns = Math.max(recordedRespawns, observedRespawns, inferredNpcRespawnCount(spawned, cfg.amount));
+  const alive = liveUnits.filter((u) => u.team === "npc" && u.style === cfg.style && (u.hp ?? 0) > 0).length;
+  return { spawned, respawns, alive, observedBodies, observedRespawns };
+}
+
+function npcTrackerRows(game = {}) {
+  const setup = game.setup || DEFAULT_SETUP;
+  return npcSpawnConfigs(setup).map((cfg) => {
+    const observed = npcObservedSpawnStats(game, cfg);
+    const maxBodies = cfg.maxSpawns > 0 ? cfg.amount * cfg.maxSpawns : 0;
+    return { ...cfg, ...observed, maxBodies };
+  });
+}
+
+function npcRespawnDisplay(current, max) {
+  return `${current}/${max > 0 ? max : "∞"}`;
+}
+
+function npcSpawnedDisplay(current, maxBodies) {
+  return `${current}/${maxBodies > 0 ? maxBodies : "∞"}`;
 }
 
 function initialNpcSpawnSchedule(setup = DEFAULT_SETUP) {
   return Object.fromEntries(npcSpawnConfigs(setup).map((cfg) => [cfg.style, cfg.interval]));
+}
+
+function npcDropChanceRows(styleId) {
+  const contentDrops = contentDropsForNpc(styleId);
+  if (contentDrops) return contentDrops.map((row) => ({ ...row, chance: Number(row.chance ?? 1) }));
+  if (styleId === "goblin") return goblinLootChanceRows();
+  if (styleId === "hill_giant") return hillGiantLootChanceRows();
+  return [];
+}
+
+function npcDropSummary(styleId) {
+  const drops = npcDropChanceRows(styleId);
+  if (!drops.length) return "No listed drops.";
+  return drops.map((row) => {
+    if (row.type === "gold") {
+      const min = row.minQty ?? row.min ?? 1;
+      const max = row.maxQty ?? row.max ?? min;
+      return `Gold ${chanceLabel(row.chance)} (${min}-${max}g)`;
+    }
+    const min = row.minQty ?? row.min ?? 1;
+    const max = row.maxQty ?? row.max ?? min;
+    const qty = Number(max) > 1 || Number(min) > 1 ? ` (${min}-${max})` : "";
+    return `${itemById(row.itemId)?.name || row.itemId || "Item"} ${chanceLabel(row.chance)}${qty}`;
+  }).join(" • ");
+}
+
+function npcStatsSummary(styleId) {
+  const style = styleDefinition(styleId);
+  const stats = style.baseStats || {};
+  return `${stats.hitpoints || 1} HP • ${stats.attack || 1} Atk / ${stats.strength || 1} Str / ${stats.defence || 1} Def / ${stats.magic || 1} Mag / ${stats.range || 1} Rng • Speed ${style.attackTicks || 1} • Range ${style.range || 1}`;
 }
 
 function sizeOf(setup) {
@@ -635,6 +1005,22 @@ function isInBaseZone(row, col, team, sizeOrSetup) {
   return row >= b.r0 && row <= b.r1 && col >= b.c0 && col <= b.c1;
 }
 
+function footprintTouchesPlayerBaseZone(footprint, setup) {
+  const teams = activeTeams(setup || DEFAULT_SETUP);
+  return (footprint || []).some((cell) => teams.some((team) => isInBaseZone(cell.row, cell.col, team, setup)));
+}
+
+function isProtectedNpcSpawnFootprint(footprint, setup) {
+  return footprintTouchesPlayerBaseZone(footprint, setup);
+}
+
+function isCenterSpawnCandidate(row, col, styleId, setup) {
+  const size = sizeOf(setup);
+  const mid = midOf(size);
+  const radius = centerRadiusFor(setup) + Math.max(3, unitSize(styleId) + 1);
+  return Math.max(Math.abs(row - mid), Math.abs(col - mid)) <= radius;
+}
+
 function isCenterCell(row, col, sizeOrSetup = DEFAULT_SETUP) {
   const size = typeof sizeOrSetup === "number" ? sizeOrSetup : sizeOf(sizeOrSetup);
   const radius = centerRadiusFor(sizeOrSetup);
@@ -666,12 +1052,12 @@ function kothControllerTeam(units, setup = DEFAULT_SETUP) {
   const teams = activeTeams(setup);
   const occupants = units.filter((unit) => unit.hp > 0 && teams.includes(unit.team) && isHillCell(unit.row, unit.col, setup));
   if (!occupants.length) return null;
-  const alliances = new Set(occupants.map((unit) => teamAllianceId(unit.team, setup)));
-  if (alliances.size !== 1) return null;
   const ranked = teams
     .map((team) => ({ team, count: occupants.filter((unit) => unit.team === team).length }))
     .filter((entry) => entry.count > 0)
     .sort((a, b) => b.count - a.count || TEAM_ORDER[a.team] - TEAM_ORDER[b.team]);
+  if (!ranked.length) return null;
+  if (ranked[1] && ranked[1].count === ranked[0].count) return null;
   return ranked[0]?.team || null;
 }
 
@@ -989,6 +1375,105 @@ function statLevel(unit, stat) {
   return unit.stats?.[stat]?.level ?? 1;
 }
 
+function prayerIds(unit) {
+  if (Array.isArray(unit?.activePrayers)) return unit.activePrayers.filter((id) => PRAYER_BY_ID[id]);
+  if (unit?.activePrayers && typeof unit.activePrayers === "object") return Object.keys(unit.activePrayers).filter((id) => unit.activePrayers[id] && PRAYER_BY_ID[id]);
+  return [];
+}
+
+function activePrayerDefs(unit) {
+  return prayerIds(unit).map((id) => PRAYER_BY_ID[id]).filter(Boolean);
+}
+
+function maxPrayerPoints(unit) {
+  return Math.max(1, statLevel(unit, "prayer"));
+}
+
+function currentPrayerPoints(unit) {
+  const value = Number(unit?.prayerPoints);
+  return Number.isFinite(value) ? Math.max(0, value) : maxPrayerPoints(unit);
+}
+
+function prayerUnlocked(unit, prayerId) {
+  const prayer = PRAYER_BY_ID[prayerId];
+  return Boolean(prayer && statLevel(unit, "prayer") >= prayer.level);
+}
+
+function togglePrayerList(unit, prayerId) {
+  const prayer = PRAYER_BY_ID[prayerId];
+  if (!prayer || !prayerUnlocked(unit, prayerId) || currentPrayerPoints(unit) <= 0) return prayerIds(unit);
+  const current = prayerIds(unit);
+  if (current.includes(prayerId)) return current.filter((id) => id !== prayerId);
+  const newCategories = new Set(prayer.categories || []);
+  const filtered = current.filter((id) => {
+    const other = PRAYER_BY_ID[id];
+    return !(other?.categories || []).some((cat) => newCategories.has(cat));
+  });
+  return [...filtered, prayerId];
+}
+
+function activePrayerMultiplier(unit, key) {
+  let multiplier = 1;
+  for (const prayer of activePrayerDefs(unit)) {
+    const value = Number(prayer.boosts?.[key]);
+    if (Number.isFinite(value) && value > 0) multiplier = Math.max(multiplier, value);
+  }
+  return multiplier;
+}
+
+function boostedStatLevel(unit, stat, contextStyle = null) {
+  let multiplier = activePrayerMultiplier(unit, stat);
+  const type = contextStyle ? combatType(contextStyle) : null;
+  if (stat === "defence" && type === "magic") multiplier = Math.max(multiplier, activePrayerMultiplier(unit, "defenceMagic"));
+  return Math.max(1, Math.floor(statLevel(unit, stat) * multiplier));
+}
+
+function prayerDamageMultiplier(unit, styleId) {
+  const type = combatType(styleId);
+  if (type === "range") return activePrayerMultiplier(unit, "rangedStrength");
+  if (type === "magic") return activePrayerMultiplier(unit, "magicDamage");
+  return 1;
+}
+
+function activeOverheadPrayer(unit) {
+  return activePrayerDefs(unit).find((prayer) => prayer.overhead) || null;
+}
+
+function protectionPrayerFor(unit, attackStyle) {
+  const attackType = combatType(attackStyle);
+  return activePrayerDefs(unit).find((prayer) => prayer.protectStyle === attackType) || null;
+}
+
+function hasSpecialPrayer(unit, special) {
+  return activePrayerDefs(unit).some((prayer) => prayer.special === special);
+}
+
+function applyPrayerDrain(unit, dt) {
+  if (!unit || unit.team === "npc") return false;
+  const active = activePrayerDefs(unit).filter((prayer) => prayerUnlocked(unit, prayer.id));
+  if (!active.length) {
+    unit.activePrayers = [];
+    if (unit.prayerPoints == null) unit.prayerPoints = maxPrayerPoints(unit);
+    return false;
+  }
+  let points = currentPrayerPoints(unit);
+  const drain = active.reduce((sum, prayer) => sum + dt / Math.max(0.1, Number(prayer.drainSeconds || 3)), 0);
+  points = Math.max(0, points - drain);
+  unit.prayerPoints = points;
+  if (points <= 0.0001) {
+    unit.prayerPoints = 0;
+    unit.activePrayers = [];
+    return true;
+  }
+  unit.activePrayers = active.map((prayer) => prayer.id);
+  return false;
+}
+
+function restorePrayerOnDeath(unit) {
+  if (!unit || unit.team === "npc") return unit;
+  return { ...unit, prayerPoints: maxPrayerPoints(unit), activePrayers: [] };
+}
+
 function grantXp(unit, stat, amount) {
   if (!unit.stats?.[stat] || amount <= 0) return 0;
   let gained = 0;
@@ -1176,6 +1661,8 @@ function makeUnit(id, team, style, setup, carried = {}) {
     flagGrabs: carried.flagGrabs ?? 0,
     flagCaptures: carried.flagCaptures ?? 0,
     lootGold: carried.lootGold ?? 0,
+    prayerPoints: carried.prayerPoints ?? stats.prayer.level,
+    activePrayers: Array.isArray(carried.activePrayers) ? carried.activePrayers.filter((id) => PRAYER_BY_ID[id]) : [],
     equipment: carried.equipment ? { ...makeDefaultEquipment(), ...carried.equipment } : makeDefaultEquipment(),
   };
 }
@@ -1187,6 +1674,177 @@ function staggerUnitsForFightStart(unitsInput) {
     moveTimer: Math.max(Number(unit.moveTimer ?? 0), (index % 8) * (MOVE_EVERY / 8)),
     cooldown: Math.max(0, Number(unit.cooldown ?? 0)),
   })));
+}
+
+function cpuTeamsInLobby(lobby) {
+  const active = new Set(activeTeams(lobby?.setup || lobby?.game?.setup || DEFAULT_SETUP));
+  return currentPlayers(lobby).filter((p) => isCpuPlayer(p) && p.team && active.has(p.team)).map((p) => p.team);
+}
+
+function centerTargetCell(setup = DEFAULT_SETUP, fromBase = null) {
+  const size = sizeOf(setup);
+  const mid = midOf(size);
+  const radius = Math.floor(centerSizeFor(setup) / 2);
+  if (!fromBase) return { row: mid, col: mid };
+  return {
+    row: Math.max(mid - radius, Math.min(mid + radius, fromBase.row)),
+    col: Math.max(mid - radius, Math.min(mid + radius, fromBase.col)),
+  };
+}
+
+function carveRoadPath(boardInput, setup, team) {
+  const board = cloneBoard(boardInput);
+  const size = sizeOf(setup);
+  const base = baseOf(team, setup);
+  const preferredTarget = centerTargetCell(setup, base);
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const canCarve = (r, c) => {
+    if (!inBounds(r, c, size)) return false;
+    if (isOuterTreeWallCell(r, c, board[r][c], setup)) return false;
+    return isCenterCell(r, c, setup) || board[r][c]?.owner === team || isBaseCell(r, c, setup);
+  };
+  const paint = (r, c) => {
+    if (!canCarve(r, c)) return;
+    board[r][c] = {
+      ...board[r][c],
+      type: "road",
+      hp: null,
+      resourceHp: null,
+      resourceMaxHp: null,
+      regrowTimer: 0,
+      regrowType: null,
+      regrowAt: null,
+    };
+  };
+
+  // CPU build paths need to use the same ownership rules that human players see.
+  // A simple L-shaped dig can cross another player's sector on 5+ player arena
+  // maps, especially Fortress Mid, leaving the CPU stuck at "needs path".
+  // This BFS finds a carveable path through the CPU's own zone into any middle tile,
+  // ignoring current terrain so walls/resources/empty cells can be converted to road.
+  const startKey = key(base.row, base.col);
+  const queue = [{ row: base.row, col: base.col }];
+  const seen = new Set([startKey]);
+  const parent = new Map();
+  let foundKey = null;
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head];
+    if (isCenterCell(cur.row, cur.col, setup)) {
+      foundKey = key(cur.row, cur.col);
+      break;
+    }
+    const orderedDirs = dirs
+      .map(([dr, dc]) => ({ dr, dc, dist: Math.abs(cur.row + dr - preferredTarget.row) + Math.abs(cur.col + dc - preferredTarget.col) }))
+      .sort((a, b) => a.dist - b.dist);
+    for (const { dr, dc } of orderedDirs) {
+      const nr = cur.row + dr;
+      const nc = cur.col + dc;
+      const k = key(nr, nc);
+      if (seen.has(k) || !canCarve(nr, nc)) continue;
+      seen.add(k);
+      parent.set(k, key(cur.row, cur.col));
+      queue.push({ row: nr, col: nc });
+    }
+  }
+
+  if (foundKey) {
+    let k = foundKey;
+    const path = [];
+    while (k) {
+      const [r, c] = k.split(",").map(Number);
+      path.push({ row: r, col: c });
+      if (k === startKey) break;
+      k = parent.get(k);
+    }
+    path.reverse().forEach((tile) => paint(tile.row, tile.col));
+    return board;
+  }
+
+  // Fallback: keep the old direct carve behavior, but only where build ownership allows it.
+  let row = base.row;
+  let col = base.col;
+  paint(row, col);
+  while (row !== preferredTarget.row) {
+    row += row < preferredTarget.row ? 1 : -1;
+    paint(row, col);
+  }
+  while (col !== preferredTarget.col) {
+    col += col < preferredTarget.col ? 1 : -1;
+    paint(row, col);
+  }
+  return board;
+}
+
+function ensureCpuBuildPaths(gameInput, lobbyLike) {
+  if (!gameInput?.board) return gameInput;
+  const setup = gameInput.setup || lobbyLike?.setup || DEFAULT_SETUP;
+  const teams = cpuTeamsInLobby({ ...lobbyLike, setup, game: gameInput });
+  if (!teams.length) return gameInput;
+  let board = gameInput.board;
+  const repairedTeams = [];
+  for (const team of teams) {
+    if (!teamConnectedToCenter(board, team, setup)) {
+      board = carveRoadPath(board, setup, team);
+      if (teamConnectedToCenter(board, team, setup)) repairedTeams.push(team);
+    }
+  }
+  const log = repairedTeams.length
+    ? [`CPU path repaired for ${repairedTeams.map((team) => TEAM_META[team]?.name || team).join(", ")}.`, ...(gameInput.log || [])].slice(0, 8)
+    : gameInput.log;
+  return { ...gameInput, board, log };
+}
+
+function makeCpuRosterForTeam(team, setup, existingUnits = []) {
+  if (!team) return [];
+  const maxUnits = Math.max(1, Number(setup?.maxUnits || DEFAULT_SETUP.maxUnits));
+  const targetCount = Math.min(maxUnits, maxUnits >= 10 ? 8 : Math.max(4, maxUnits));
+  const preferred = ["melee", "range", "magic", "woodcutter", "miner", "melee", "range", "magic", "dinhs_bulwark", "heavy_ballista", "ancient_staff"];
+  const roster = [];
+  const existingCount = existingUnits.filter((u) => u.team === team && u.team !== "npc").length;
+  let gold = Number(setup?.startingGold || DEFAULT_SETUP.startingGold);
+  for (const style of preferred) {
+    if (existingCount + roster.length >= targetCount) break;
+    const def = STYLE[style];
+    if (!def || def.npc || !MINION_STYLE_IDS.includes(style)) continue;
+    const cost = Number(def.cost || 0);
+    if (cost > gold && roster.length >= 3) continue;
+    gold -= cost;
+    const index = existingCount + roster.length + 1;
+    roster.push(makeUnit(`cpu_${team}_${style}_${index}`, team, style, setup, {
+      name: `${TEAM_META[team]?.name || team} CPU ${def.name || style}`,
+      ownerPlayerId: cpuPlayerIdForTeam(team),
+      targetOverride: defaultUnitTargetOverride(style),
+    }));
+  }
+  while (existingCount + roster.length < Math.min(3, maxUnits)) {
+    const style = ["melee", "range", "magic"][roster.length % 3];
+    const index = existingCount + roster.length + 1;
+    roster.push(makeUnit(`cpu_${team}_${style}_${index}`, team, style, setup, {
+      name: `${TEAM_META[team]?.name || team} CPU ${STYLE[style]?.name || style}`,
+      ownerPlayerId: cpuPlayerIdForTeam(team),
+    }));
+  }
+  return roster;
+}
+
+function ensureCpuRosters(gameInput, lobbyLike) {
+  if (!gameInput) return gameInput;
+  const setup = gameInput.setup || lobbyLike?.setup || DEFAULT_SETUP;
+  const teams = cpuTeamsInLobby({ ...lobbyLike, setup, game: gameInput });
+  if (!teams.length) return gameInput;
+  const units = arrayFromObject(gameInput.units);
+  const gold = { ...(gameInput.gold || makeGold(setup)) };
+  let changed = false;
+  for (const team of teams) {
+    const existing = units.filter((u) => u.team === team);
+    if (existing.length) continue;
+    const roster = makeCpuRosterForTeam(team, setup, units);
+    for (const unit of roster) units.push(unit);
+    const spent = roster.reduce((sum, unit) => sum + Number(STYLE[unit.style]?.cost || 0), 0);
+    gold[team] = Math.max(0, Number(gold[team] ?? setup.startingGold ?? DEFAULT_SETUP.startingGold) - spent);
+    changed = changed || roster.length > 0;
+  }
+  return changed ? { ...gameInput, units: objectFromArray(units), gold } : gameInput;
 }
 
 function makeInitialGame(setup = DEFAULT_SETUP) {
@@ -1213,10 +1871,11 @@ function makeInitialGame(setup = DEFAULT_SETUP) {
     npcSpawns: Boolean(setup.npcSpawns),
     goblinSpawnAmount: Math.max(0, Math.min(10, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount))),
     goblinSpawnInterval: Math.max(10, Math.min(600, Number(setup.goblinSpawnInterval ?? setup.npcSpawnInterval) || DEFAULT_SETUP.goblinSpawnInterval)),
-    hillGiantSpawnAmount: Math.max(0, Math.min(5, Number(setup.hillGiantSpawnAmount) || DEFAULT_SETUP.hillGiantSpawnAmount)),
+    hillGiantSpawnAmount: Math.max(0, Math.min(20, Number(setup.hillGiantSpawnAmount) || DEFAULT_SETUP.hillGiantSpawnAmount)),
     hillGiantSpawnInterval: Math.max(10, Math.min(600, Number(setup.hillGiantSpawnInterval) || DEFAULT_SETUP.hillGiantSpawnInterval)),
-    npcSpawnAmount: Math.max(0, Math.min(10, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount))),
+    npcSpawnAmount: Math.max(0, Math.min(20, Number(setup.goblinSpawnAmount ?? setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount))),
     npcSpawnInterval: Math.max(10, Math.min(600, Number(setup.goblinSpawnInterval ?? setup.npcSpawnInterval) || DEFAULT_SETUP.goblinSpawnInterval)),
+    npcSpawnSettings: normalizeNpcSpawnSettings(setup.npcSpawnSettings),
     teamMode: Boolean(setup.teamMode),
   };
   safeSetup.alliances = normalizeTeamAlliances(safeSetup);
@@ -1230,6 +1889,7 @@ function makeInitialGame(setup = DEFAULT_SETUP) {
     effects: {},
     groundItems: {},
     marketItems: {},
+    shopPurchases: {},
     fightTime: 0,
     bases: makeBases(safeSetup),
     ctfScores: Object.fromEntries(activeTeams(safeSetup).map((team) => [team, 0])),
@@ -1242,6 +1902,8 @@ function makeInitialGame(setup = DEFAULT_SETUP) {
     results: null,
     nextNpcSpawnAt: safeSetup.goblinSpawnInterval || safeSetup.npcSpawnInterval || NPC_SPAWN_INTERVAL,
     nextNpcSpawnAtByStyle: initialNpcSpawnSchedule(safeSetup),
+    npcSpawnedTotals: {},
+    npcRespawnTotals: {},
     log: ["Game created. Waiting for players."],
   };
 }
@@ -1269,6 +1931,15 @@ function objectFromArray(items, keyName = "id") {
     out[safeKey] = { ...item, [keyName]: safeKey };
   }
   return out;
+}
+
+function jsonEqual(a, b) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function patchIfChanged(patch, previous, keyName, nextValue) {
+  const safeNext = nextValue === undefined ? null : nextValue;
+  if (!jsonEqual(previous?.[keyName], safeNext)) patch[keyName] = safeNext;
 }
 
 
@@ -1343,11 +2014,22 @@ function removeOneInventoryEntry(inventory, index) {
   return one;
 }
 
-function makeMarketItem(itemOrId, sellerTeam = null) {
+function makeMarketItem(itemOrId, sellerTeam = null, qty = 1) {
   const item = itemById(itemOrId);
   if (!item) return null;
   const source = singleInventoryEntry(itemOrId) || makeInventoryItem(item.id);
-  return { ...source, marketId: makeRuntimeId("market"), sellerTeam, listedAt: Date.now(), price: item.cost };
+  return { ...source, qty: Math.max(1, Math.round(Number(qty) || 1)), marketId: makeRuntimeId("market"), sellerTeam, listedAt: Date.now(), price: item.cost };
+}
+
+function removeInventoryQuantity(inventory, index, quantity = 1) {
+  const entry = inventory[index];
+  const item = itemById(entry);
+  if (!item) return 0;
+  const current = itemQuantity(entry);
+  const amount = Math.max(1, Math.min(current, Math.round(Number(quantity) || 1)));
+  if (current > amount) inventory[index] = { ...entry, itemId: item.id, qty: current - amount };
+  else inventory[index] = null;
+  return amount;
 }
 
 function marketItemsArray(game) {
@@ -1370,7 +2052,7 @@ function groupedMarketItemsArray(game) {
       newestListedAt: 0,
     };
     existing.keys.push(entry.key);
-    existing.stock += 1;
+    existing.stock += itemQuantity(entry);
     existing.newestListedAt = Math.max(existing.newestListedAt || 0, Number(entry.listedAt || 0));
     groups.set(groupKey, existing);
   }
@@ -1477,7 +2159,23 @@ function rollGoblinLoot() {
   return { type: "gold", amount: 1 };
 }
 
+function contentDropsForNpc(styleId) {
+  const npc = (GAME_CONTENT_PACK.npcs || []).find((entry) => cleanContentId(entry.id) === styleId);
+  if (!npc || !Array.isArray(npc.drops)) return null;
+  return npc.drops;
+}
+
 function rollNpcDrops(styleId) {
+  const contentDrops = contentDropsForNpc(styleId);
+  if (contentDrops) {
+    const drops = [];
+    for (const row of contentDrops) {
+      if (Math.random() > Number(row.chance ?? 1)) continue;
+      if (row.type === "gold") drops.push({ type: "gold", amount: randomAmount(row.minQty ?? row.min ?? 1, row.maxQty ?? row.max ?? row.minQty ?? 1) });
+      else if (row.itemId && itemById(row.itemId)) drops.push({ type: "item", itemId: row.itemId, qty: randomAmount(row.minQty ?? row.min ?? 1, row.maxQty ?? row.max ?? row.minQty ?? 1) });
+    }
+    return drops;
+  }
   if (styleId === "hill_giant") {
     const drops = [...HILL_GIANT_ALWAYS_DROP_ITEMS.map((drop) => ({ type: "item", itemId: drop.itemId, qty: drop.qty || 1 }))];
     for (const row of HILL_GIANT_DROP_TABLE) {
@@ -1490,6 +2188,89 @@ function rollNpcDrops(styleId) {
   const drops = GOBLIN_ALWAYS_DROP_ITEMS.map((itemId) => ({ type: "item", itemId, qty: 1 }));
   drops.unshift(rollGoblinLoot());
   return drops;
+}
+
+function footprintBlockedUnits(units, footprint, setup) {
+  const blocked = new Set(footprint.map((cell) => key(cell.row, cell.col)));
+  return units.filter((u) => u.hp > 0 && !isBaseCell(u.row, u.col, setup) && unitFootprint(u).some((cell) => blocked.has(key(cell.row, cell.col))));
+}
+
+function findNpcForcedSpawnCell(setup, units, styleId, board) {
+  const size = sizeOf(setup);
+  const mid = midOf(size);
+  const probe = { team: "npc", style: styleId, row: mid, col: mid, hp: STYLE[styleId]?.baseStats?.hitpoints || 1 };
+  let best = null;
+  const maxSpawnRadius = centerRadiusFor(setup) + Math.max(4, unitSize(styleId) + 2);
+  for (let radius = 0; radius <= maxSpawnRadius; radius++) {
+    for (let row = mid - radius; row <= mid + radius; row++) {
+      for (let col = mid - radius; col <= mid + radius; col++) {
+        if (!inBounds(row, col, size)) continue;
+        if (Math.max(Math.abs(row - mid), Math.abs(col - mid)) !== radius) continue;
+        if (!isCenterSpawnCandidate(row, col, styleId, setup)) continue;
+        const footprint = unitFootprintAt(probe, row, col);
+        if (footprint.some((cell) => !inBounds(cell.row, cell.col, size) || isBaseCell(cell.row, cell.col, setup)) || isProtectedNpcSpawnFootprint(footprint, setup)) continue;
+        const blockers = footprintBlockedUnits(units, footprint, setup);
+        const terrainCost = footprint.reduce((sum, cell) => sum + (walkable(board[cell.row]?.[cell.col], setup) ? 0 : 1), 0);
+        const score = blockers.length * 20 + terrainCost * 2 + Math.abs(row - mid) + Math.abs(col - mid);
+        if (!best || score < best.score) best = { row, col, footprint, blockers, score };
+      }
+    }
+    if (best && radius >= 1) return best;
+  }
+  return best;
+}
+
+function findNearestDisplacementCell(board, units, blocker, setup, avoidKeys) {
+  const size = sizeOf(setup);
+  const queue = [{ row: blocker.row, col: blocker.col }];
+  const seen = new Set([key(blocker.row, blocker.col)]);
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  let qi = 0;
+  while (qi < queue.length) {
+    const cur = queue[qi++];
+    const footprint = unitFootprintAt(blocker, cur.row, cur.col);
+    if (!footprint.some((cell) => avoidKeys.has(key(cell.row, cell.col))) && canUnitStandAt(board, units, blocker, cur.row, cur.col, setup)) return cur;
+    for (const [dr, dc] of dirs) {
+      const nr = cur.row + dr;
+      const nc = cur.col + dc;
+      const k = key(nr, nc);
+      if (!inBounds(nr, nc, size) || seen.has(k)) continue;
+      seen.add(k);
+      queue.push({ row: nr, col: nc });
+    }
+  }
+  return null;
+}
+
+function forceNpcSpawnArea(game, units, setup, styleId, board, logEntries = []) {
+  const forced = findNpcForcedSpawnCell(setup, units, styleId, board);
+  if (!forced) return null;
+  const avoidKeys = new Set(forced.footprint.map((cell) => key(cell.row, cell.col)));
+  const moves = [];
+  for (const blocker of forced.blockers) {
+    const spot = findNearestDisplacementCell(board, units, blocker, setup, avoidKeys);
+    if (!spot) return null;
+    moves.push({ blocker, spot });
+  }
+  for (const cell of forced.footprint) {
+    const target = board[cell.row]?.[cell.col];
+    if (!target) continue;
+    target.type = "road";
+    target.resourceHp = null;
+    target.resourceMaxHp = null;
+    target.regrowType = null;
+    target.regrowAt = null;
+    target.forcedNpcGround = true;
+  }
+  for (const { blocker, spot } of moves) {
+    blocker.row = spot.row;
+    blocker.col = spot.col;
+    blocker.manualTargetBlockedSince = null;
+  }
+  const stillBlocked = footprintBlockedUnits(units, forced.footprint, setup);
+  if (stillBlocked.length) return null;
+  if (logEntries) logEntries.unshift(`${STYLE[styleId]?.name || "NPC"} forced open a ${unitSize(styleId)}x${unitSize(styleId)} spawn area near the center.`);
+  return forced;
 }
 
 function makeNpcUnit(id, style, setup) {
@@ -1510,11 +2291,15 @@ function npcSpawnCells(setup, units, styleId = "goblin", board = null) {
   const candidates = [];
   const spawnBoard = board || makeBoard(setup);
   const probe = { team: "npc", style: styleId, row: mid, col: mid, hp: STYLE[styleId]?.baseStats?.hitpoints || 1 };
-  for (let radius = 0; radius <= 4; radius++) {
+  const maxSpawnRadius = centerRadiusFor(setup) + Math.max(4, unitSize(styleId) + 1);
+  for (let radius = 0; radius <= maxSpawnRadius; radius++) {
     for (let row = mid - radius; row <= mid + radius; row++) {
       for (let col = mid - radius; col <= mid + radius; col++) {
         if (!inBounds(row, col, size)) continue;
         if (Math.max(Math.abs(row - mid), Math.abs(col - mid)) !== radius) continue;
+        if (!isCenterSpawnCandidate(row, col, styleId, setup)) continue;
+        const footprint = unitFootprintAt(probe, row, col);
+        if (isProtectedNpcSpawnFootprint(footprint, setup)) continue;
         if (canUnitStandAt(spawnBoard, units, probe, row, col, setup)) candidates.push({ row, col });
       }
     }
@@ -1535,42 +2320,70 @@ function plannedNpcSpawnCells(setup, units, styleId, count, board = null) {
   return planned;
 }
 
-function spawnNpcIfNeeded(game, units, setup, fightTime, killFeed, logEntries, effects = []) {
-  if (!setup.npcSpawns) return { units, killFeed, logEntries, effects };
+function spawnNpcIfNeeded(game, units, setup, fightTime, killFeed, logEntries, effects = [], board = game.board) {
+  if (!setup.npcSpawns) return { units, killFeed, logEntries, effects, boardDirty: false };
   const nextByStyle = { ...(game.nextNpcSpawnAtByStyle || {}) };
+  const spawnTotals = { ...(game.npcSpawnedTotals || {}) };
+  const respawnTotals = { ...(game.npcRespawnTotals || {}) };
   const spawnedByStyle = {};
+  let boardDirty = false;
   let anyDue = false;
   for (const cfg of npcSpawnConfigs(setup)) {
-    const spawnInterval = Math.max(10, Number(cfg.interval) || NPC_SPAWN_INTERVAL);
+    const spawnInterval = clampNpcSpawnInterval(cfg.interval, NPC_SPAWN_INTERVAL);
     let nextAt = Number(nextByStyle[cfg.style] ?? (cfg.style === "goblin" ? game.nextNpcSpawnAt : undefined) ?? spawnInterval);
     if (fightTime + 0.0001 < nextAt) continue;
     anyDue = true;
+    const observed = npcObservedSpawnStats({ ...game, npcSpawnedTotals: spawnTotals, npcRespawnTotals: respawnTotals }, cfg, units);
+    spawnTotals[cfg.style] = Math.max(Number(spawnTotals[cfg.style] || 0), observed.spawned);
+    respawnTotals[cfg.style] = Math.max(Number(respawnTotals[cfg.style] || 0), observed.respawns);
+    const respawnsSoFar = Math.max(0, Number(respawnTotals[cfg.style] || 0));
+    const remainingRespawns = cfg.maxSpawns > 0 ? Math.max(0, cfg.maxSpawns - respawnsSoFar) : Infinity;
     const alive = units.filter((u) => u.team === "npc" && u.style === cfg.style && u.hp > 0).length;
-    const toSpawn = Math.max(0, cfg.amount - alive);
-    for (let i = 0; i < toSpawn; i++) {
-      const cell = npcSpawnCells(setup, units, cfg.style, game.board)[0];
+    const allowedOnMap = cfg.maxAlive > 0 ? cfg.maxAlive : Infinity;
+    const roomOnMap = Math.max(0, allowedOnMap - alive);
+    const targetSpawnCount = remainingRespawns > 0 ? Math.min(cfg.amount, roomOnMap) : 0;
+    let spawnedThisTrigger = 0;
+    const spawnWaveId = targetSpawnCount > 0 ? makeRuntimeId(`npcwave_${cfg.style}`) : null;
+    for (let i = 0; i < targetSpawnCount; i++) {
+      let cell = npcSpawnCells(setup, units, cfg.style, board)[0];
+      if (!cell && cfg.style === "tz_tok_jad") {
+        const forced = forceNpcSpawnArea(game, units, setup, cfg.style, board, logEntries);
+        if (forced) {
+          cell = { row: forced.row, col: forced.col };
+          boardDirty = true;
+        }
+      }
       if (!cell) break;
       const npc = makeNpcUnit(makeRuntimeId("npc"), cfg.style, setup);
       npc.row = cell.row;
       npc.col = cell.col;
+      npc.spawnWaveId = spawnWaveId;
+      npc.spawnedAt = fightTime;
       units.push(npc);
       effects.push({ id: makeRuntimeId("spawn"), type: "spawn", row: npc.row, col: npc.col, team: "npc", style: cfg.style, ttl: SPAWN_EFFECT_TTL });
       spawnedByStyle[cfg.style] = (spawnedByStyle[cfg.style] || 0) + 1;
+      spawnTotals[cfg.style] = (spawnTotals[cfg.style] || 0) + 1;
+      spawnedThisTrigger += 1;
+    }
+    if (spawnedThisTrigger > 0) {
+      respawnTotals[cfg.style] = respawnsSoFar + 1;
     }
     nextAt += spawnInterval;
     while (nextAt <= fightTime + 0.0001) nextAt += spawnInterval;
     nextByStyle[cfg.style] = nextAt;
   }
-  if (!anyDue) return { units, killFeed, logEntries, effects };
+  if (!anyDue) return { units, killFeed, logEntries, effects, boardDirty };
   game.nextNpcSpawnAtByStyle = nextByStyle;
+  game.npcSpawnedTotals = spawnTotals;
+  game.npcRespawnTotals = respawnTotals;
   game.nextNpcSpawnAt = nextByStyle.goblin ?? game.nextNpcSpawnAt ?? NPC_SPAWN_INTERVAL;
   const totalSpawned = Object.values(spawnedByStyle).reduce((sum, count) => sum + count, 0);
-  if (totalSpawned <= 0) return { units, killFeed, logEntries, effects };
+  if (totalSpawned <= 0) return { units, killFeed, logEntries, effects, boardDirty, npcSpawnedTotals: spawnTotals, npcRespawnTotals: respawnTotals };
   const labels = Object.entries(spawnedByStyle).map(([style, count]) => `${count} ${STYLE[style]?.name || style}${count === 1 ? "" : "s"}`);
   const spawnText = `${labels.join(" and ")} spawned near the center.`;
   killFeed = [{ id: makeRuntimeId("feed"), text: spawnText, team: "npc", style: Object.keys(spawnedByStyle)[0] || "goblin", time: fightTime }, ...killFeed].slice(0, 30);
   logEntries = [spawnText, ...logEntries].slice(0, 8);
-  return { units, killFeed, logEntries, effects };
+  return { units, killFeed, logEntries, effects, boardDirty, npcSpawnedTotals: spawnTotals, npcRespawnTotals: respawnTotals };
 }
 
 function firstOpenInventorySlot(arr) {
@@ -1746,10 +2559,10 @@ function rollAttack(attacker, defenderStyle, defenderStats) {
   const style = styleDefinition(effectiveStyle);
   const adv = advantage(effectiveStyle, defenderStyle);
   const offense = safeAttacker.carryingFlagTeam
-    ? statLevel(safeAttacker, "attack") + (FLAG_WEAPON_BONUS.attack ?? 0) + gearAttackBonusFor(safeAttacker, "melee")
-    : statLevel(safeAttacker, offensiveStat(safeAttacker.style)) + gearAttackBonusFor(safeAttacker, safeAttacker.style);
+    ? boostedStatLevel(safeAttacker, "attack", "melee") + (FLAG_WEAPON_BONUS.attack ?? 0) + gearAttackBonusFor(safeAttacker, "melee")
+    : boostedStatLevel(safeAttacker, offensiveStat(safeAttacker.style), safeAttacker.style) + gearAttackBonusFor(safeAttacker, safeAttacker.style);
   const defenderUnit = defenderStats?.stats ? defenderStats : { stats: defenderStats };
-  const defence = (defenderUnit.stats?.defence?.level ?? 1) + gearDefenceBonusFor(defenderUnit, effectiveStyle);
+  const defence = boostedStatLevel(defenderUnit, "defence", effectiveStyle) + gearDefenceBonusFor(defenderUnit, effectiveStyle);
   let chance = 0.55 + (offense - defence) / 190;
   if (adv === 1) chance += 0.1;
   if (adv === -1) chance -= 0.1;
@@ -1764,9 +2577,9 @@ function maxDamageRoll(attacker, defenderStyle) {
   const style = styleDefinition(effectiveStyle);
   const adv = advantage(effectiveStyle, defenderStyle);
   const level = safeAttacker.carryingFlagTeam
-    ? statLevel(safeAttacker, "strength") + (FLAG_WEAPON_BONUS.strength ?? 0) + gearStrengthBonusFor(safeAttacker, "melee")
-    : statLevel(safeAttacker, damageStat(safeAttacker.style)) + gearStrengthBonusFor(safeAttacker, safeAttacker.style);
-  let maxHit = Math.max(1, Math.floor(style.baseDamage * (0.65 + level / 100)));
+    ? boostedStatLevel(safeAttacker, "strength", "melee") + (FLAG_WEAPON_BONUS.strength ?? 0) + gearStrengthBonusFor(safeAttacker, "melee")
+    : boostedStatLevel(safeAttacker, damageStat(safeAttacker.style), safeAttacker.style) + gearStrengthBonusFor(safeAttacker, safeAttacker.style);
+  let maxHit = Math.max(1, Math.floor(style.baseDamage * (0.65 + level / 100) * prayerDamageMultiplier(safeAttacker, effectiveStyle)));
   if (adv === 1) maxHit = Math.ceil(maxHit * 1.1);
   if (adv === -1) maxHit = Math.max(1, Math.floor(maxHit * 0.9));
   if (!safeAttacker.carryingFlagTeam && style.dharokHpScale) {
@@ -1786,10 +2599,24 @@ function rollDamage(attacker, defenderStyle) {
   return damage;
 }
 
-function applyUnitDamage(attacker, target, dmg) {
+function applyUnitDamage(attacker, target, dmg, attackStyle = effectiveAttackStyleId(attacker)) {
   const beforeHp = target.hp;
-  const damage = Math.min(target.hp, Math.max(0, dmg));
+  let rawDamage = Math.max(0, dmg);
+  const protect = protectionPrayerFor(target, attackStyle);
+  if (protect) rawDamage *= attacker?.team === "npc" ? 0 : 0.6;
+  let damage = Math.min(target.hp, Math.max(0, Math.floor(rawDamage)));
   target.hp -= damage;
+  if (target.hp <= 0 && hasSpecialPrayer(target, "redemption") && currentPrayerPoints(target) > 0 && target.team !== "npc") {
+    target.hp = Math.max(1, Math.ceil(maxHp(target) * 0.25));
+    target.prayerPoints = 0;
+    target.activePrayers = [];
+    target.redemptionProcs = (target.redemptionProcs ?? 0) + 1;
+    damage = Math.max(0, beforeHp - target.hp);
+  }
+  if (damage > 0 && hasSpecialPrayer(attacker, "smite") && target.team !== "npc") {
+    target.prayerPoints = Math.max(0, currentPrayerPoints(target) - damage * 0.25);
+    if (target.prayerPoints <= 0) target.activePrayers = [];
+  }
   attacker.totalDamage = (attacker.totalDamage ?? 0) + damage;
   attacker.damageToUnits = (attacker.damageToUnits ?? 0) + damage;
   attacker.maxHitDealt = Math.max(attacker.maxHitDealt ?? 0, damage);
@@ -1815,7 +2642,7 @@ function resolveGuaranteedUnitHit(attacker, target, minPct = 0.4, maxPct = 0.95)
   const maxHit = maxDamageRoll(attacker, target.style);
   const pct = minPct + Math.random() * Math.max(0, maxPct - minPct);
   const dmg = Math.max(1, Math.floor(maxHit * pct));
-  const damage = applyUnitDamage(attacker, target, dmg);
+  const damage = applyUnitDamage(attacker, target, dmg, effectiveAttackStyleId(attacker));
   return { damage, hit: true, guaranteed: true };
 }
 
@@ -1974,12 +2801,14 @@ function cleanupDead(units, respawnQueue, bases) {
     if (unit.hp > 0) survivors.push(unit);
     else {
       const deathCount = (unit.deathCount ?? 0) + 1;
+      const activePrayersAtDeath = prayerIds(unit);
       if (unit.team !== "npc" && (bases[unit.team]?.hp ?? 0) > 0) {
         const respawnTime = RESPAWN_BASE_TIME + deathCount * 3 + deathCount * deathCount;
-        respawnQueue.push({ ...unit, hp: maxHp(unit), deathCount, timer: respawnTime, carryingFlagTeam: null });
-        minionsDied.push({ ...unit, carryingFlagTeam: null, deathCount, respawnTime });
+        const restored = restorePrayerOnDeath(unit);
+        respawnQueue.push({ ...restored, hp: maxHp(unit), deathCount, timer: respawnTime, carryingFlagTeam: null });
+        minionsDied.push({ ...restored, activePrayersAtDeath, carryingFlagTeam: null, deathCount, respawnTime });
       } else {
-        minionsDied.push({ ...unit, carryingFlagTeam: null, deathCount, respawnTime: 0 });
+        minionsDied.push({ ...restorePrayerOnDeath(unit), activePrayersAtDeath, carryingFlagTeam: null, deathCount, respawnTime: 0 });
       }
     }
   }
@@ -1995,7 +2824,7 @@ function resolveUnitHit(attacker, target) {
     grantXp(target, "defence", 1);
     return { damage: 0, hit: false };
   }
-  const dmg = applyUnitDamage(attacker, target, rollDamage(attacker, target.style));
+  const dmg = applyUnitDamage(attacker, target, rollDamage(attacker, target.style), effectiveAttackStyleId(attacker));
   return { damage: dmg, hit: true };
 }
 
@@ -2416,14 +3245,18 @@ function stepGame(game, dt) {
   const isKingHill = setup.gameMode === "king_hill";
   let boardDirty = false;
   const combatTeamsAtTickStart = teamsWithCombatPresence(bases, units, respawnQueue, setup);
+  for (const unit of units) applyPrayerDrain(unit, dt);
 
   const fightTime = (game.fightTime || 0) + dt;
   groundItems = groundItems.filter((item) => Number(item.expiresAt ?? 0) > fightTime);
-  const spawnedNpcState = spawnNpcIfNeeded(game, units, setup, fightTime, killFeed, logEntries, effects);
+  const spawnedNpcState = spawnNpcIfNeeded(game, units, setup, fightTime, killFeed, logEntries, effects, board);
   units = spawnedNpcState.units;
   killFeed = spawnedNpcState.killFeed;
   logEntries = spawnedNpcState.logEntries;
   effects = spawnedNpcState.effects;
+  const npcSpawnedTotals = spawnedNpcState.npcSpawnedTotals || game.npcSpawnedTotals || {};
+  const npcRespawnTotals = spawnedNpcState.npcRespawnTotals || game.npcRespawnTotals || {};
+  boardDirty = Boolean(spawnedNpcState.boardDirty) || boardDirty;
   boardDirty = processResourceRegrowth(board, units, setup, fightTime) || boardDirty;
   const strandedRespawns = respawnQueue.filter((r) => (bases[r.team]?.hp ?? 0) <= 0);
   if (strandedRespawns.length) {
@@ -2451,10 +3284,72 @@ function stepGame(game, dt) {
     rolls.forEach((roll) => addSplat(target, roll.damage ?? 0, team, style, (roll.damage ?? 0) > 0 ? `-${roll.damage}` : result?.special ? "0" : "miss"));
   };
   const addEffect = (from, target, team, style) => effects.push({ id: makeRuntimeId("e"), fromRow: from.row, fromCol: from.col, row: target.row, col: target.col, team, style, ttl: 0.8 });
+  const rollJadSpecialDamage = (jad, target, specialStyle) => {
+    const attackerStats = jad?.stats || {};
+    const targetStats = target?.stats || {};
+    const offenseStat = specialStyle === "magic" ? "magic" : "range";
+    const targetDefence = (targetStats.defence?.level ?? targetStats.defence ?? 1) + gearDefenceBonusFor(target, specialStyle);
+    const offense = (attackerStats[offenseStat]?.level ?? attackerStats[offenseStat] ?? 1);
+    let chance = 0.72 + (offense - targetDefence) / 220;
+    chance = Math.max(0.15, Math.min(0.95, chance));
+    if (Math.random() > chance) return { damage: 0, hit: false };
+    const base = Math.max(1, Number(styleDefinition(jad.style).baseDamage ?? 50));
+    const maxHit = Math.max(1, Math.floor(base * (0.65 + offense / 100)));
+    const damage = applyUnitDamage(jad, target, 1 + Math.floor(Math.random() * maxHit), specialStyle);
+    return { damage, hit: damage > 0 };
+  };
+  const handleUnitLastKill = (unit) => {
+    if (!unit?.lastKill) return;
+    const reward = unit.pendingGoldReward ?? unit.lastKill.goldReward ?? 0;
+    if (reward > 0 && activeTeams(setup).includes(unit.team)) gold[unit.team] = (gold[unit.team] ?? 0) + reward;
+    killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.lastKill.attackerName} defeated ${unit.lastKill.victimName}${reward > 0 && activeTeams(setup).includes(unit.team) ? ` (+${reward}g)` : ""}`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
+    unit.pendingGoldReward = 0;
+    unit.lastKill = null;
+  };
+  const processJadSpecial = (jad) => {
+    if (jad.style !== "tz_tok_jad" || jad.team !== "npc" || jad.hp <= 0) return;
+    if (jad.jadNextSpecialAt == null) jad.jadNextSpecialAt = fightTime + JAD_SPECIAL_INTERVAL;
+    if (fightTime + 0.0001 < jad.jadNextSpecialAt) return;
+    jad.jadNextSpecialAt = fightTime + JAD_SPECIAL_INTERVAL;
+    const specialStyle = Math.random() < 0.5 ? "range" : "magic";
+    const range = Math.max(1, unitAttackRange(jad));
+    const visibleTargets = units.filter((target) => {
+      if (target.hp <= 0 || !areHostileTeams(jad.team, target.team, setup) || !activeTeams(setup).includes(target.team)) return false;
+      if (unitDistance(jad, target) > range) return false;
+      return lineClear(board, jad, nearestTargetCell(jad, target), setup);
+    });
+    if (!visibleTargets.length) return;
+    const attackName = specialStyle === "magic" ? "Magic" : "Ranged";
+    for (const target of visibleTargets) {
+      const result = rollJadSpecialDamage(jad, target, specialStyle);
+      addSplat(target, result.damage || 0, jad.team, specialStyle, result.damage > 0 ? `-${result.damage}` : "miss");
+      addEffect(jad, target, jad.team, specialStyle);
+      target.lastAttackedAt = fightTime;
+      target.lastAttackerId = jad.id;
+      handleUnitLastKill(jad);
+    }
+    killFeed = [{ id: makeRuntimeId("feed"), text: `${jad.name || "TzTok-Jad"} used a ${attackName} shockwave on ${visibleTargets.length} visible target${visibleTargets.length === 1 ? "" : "s"}.`, team: "npc", style: specialStyle, time: fightTime }, ...killFeed].slice(0, 30);
+    logEntries = [`${jad.name || "TzTok-Jad"} used a ${attackName} shockwave.`, ...logEntries].slice(0, 8);
+  };
   const logCleanup = (cleanup) => {
     const noRespawnUnits = cleanup.minionsDied.filter((unit) => unit.respawnTime === 0 || (bases[unit.team]?.hp ?? 0) <= 0);
     if (noRespawnUnits.length) unitArchive = mergeUnitArchive(unitArchive, noRespawnUnits);
     for (const unit of cleanup.minionsDied) {
+      if (unit.team !== "npc" && (unit.activePrayersAtDeath || []).includes("retribution")) {
+        const maxRetributionHit = Math.max(1, Math.floor(statLevel(unit, "prayer") * 0.25));
+        let hitCount = 0;
+        for (const target of units) {
+          if (target.hp <= 0 || !areHostileTeams(unit.team, target.team, setup)) continue;
+          const nearDeathTile = Math.abs((target.row ?? 0) - (unit.row ?? 0)) <= 1 && Math.abs((target.col ?? 0) - (unit.col ?? 0)) <= 1;
+          if (!nearDeathTile) continue;
+          const damage = Math.min(target.hp, 1 + Math.floor(Math.random() * maxRetributionHit));
+          target.hp -= damage;
+          hitCount += 1;
+          splats.push({ id: makeRuntimeId("s"), row: target.row, col: target.col, text: `-${damage}`, team: unit.team, damageType: "prayer", ttl: SPLAT_TTL });
+          effects.push({ id: makeRuntimeId("e"), fromRow: unit.row, fromCol: unit.col, row: target.row, col: target.col, team: unit.team, style: "magic", ttl: 0.8 });
+        }
+        if (hitCount) killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.name}'s Retribution hit ${hitCount} nearby enemy${hitCount === 1 ? "" : "ies"}.`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
+      }
       if (unit.team === "npc") {
         const killer = units.find((u) => u.id === unit.lastAttackerId) || arrayFromObject(game.units).find((u) => u.id === unit.lastAttackerId);
         const npcName = STYLE[unit.style]?.name || unit.name || "NPC";
@@ -2489,6 +3384,8 @@ function stepGame(game, dt) {
   logCleanup(cleanup);
 
   for (const unit of units) {
+    if (unit.hp <= 0) continue;
+    processJadSpecial(unit);
     if (unit.hp <= 0) continue;
     const combatTeams = combatTeamsAtTickStart;
     unit.maxHpSeen = Math.max(unit.maxHpSeen ?? 0, maxHp(unit));
@@ -2704,13 +3601,7 @@ function stepGame(game, dt) {
     if (nearbyEnemyUnit && unit.cooldown <= 0) {
       const attackResult = attackUnit(unit, nearbyEnemyUnit);
       nearbyEnemyUnit.lastAttackedAt = fightTime;
-      if (unit.lastKill) {
-        const reward = unit.pendingGoldReward ?? unit.lastKill.goldReward ?? 0;
-        if (reward > 0) gold[unit.team] = (gold[unit.team] ?? 0) + reward;
-        killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.lastKill.attackerName} defeated ${unit.lastKill.victimName}${reward > 0 ? ` (+${reward}g)` : ""}`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
-        unit.pendingGoldReward = 0;
-        unit.lastKill = null;
-      }
+      handleUnitLastKill(unit);
       addAttackSplats(nearbyEnemyUnit, attackResult, unit.team, effectiveAttackStyleId(unit));
       addEffect(unit, nearbyEnemyUnit, unit.team, effectiveAttackStyleId(unit));
       if (styleDefinition(unit.style).aoeRadius && attackResultTotal(attackResult) > 0) {
@@ -2721,13 +3612,7 @@ function stepGame(game, dt) {
             if (extra) {
               const splashResult = attackUnit(unit, extra);
               extra.lastAttackedAt = fightTime;
-              if (unit.lastKill) {
-                const reward = unit.pendingGoldReward ?? unit.lastKill.goldReward ?? 0;
-                if (reward > 0) gold[unit.team] = (gold[unit.team] ?? 0) + reward;
-                killFeed = [{ id: makeRuntimeId("feed"), text: `${unit.lastKill.attackerName} defeated ${unit.lastKill.victimName}${reward > 0 ? ` (+${reward}g)` : ""}`, team: unit.team, style: unit.style, time: fightTime }, ...killFeed].slice(0, 30);
-                unit.pendingGoldReward = 0;
-                unit.lastKill = null;
-              }
+              handleUnitLastKill(unit);
               addAttackSplats(extra, splashResult, unit.team, effectiveAttackStyleId(unit));
               addEffect(unit, extra, unit.team, effectiveAttackStyleId(unit));
             }
@@ -2778,6 +3663,8 @@ function stepGame(game, dt) {
     fightTime,
     nextNpcSpawnAt: game.nextNpcSpawnAt,
     nextNpcSpawnAtByStyle: game.nextNpcSpawnAtByStyle || {},
+    npcSpawnedTotals,
+    npcRespawnTotals,
     log: logEntries,
     _boardDirty: boardDirty,
   };
@@ -3099,17 +3986,30 @@ function HpBar({ hp, max }) {
 }
 
 function UnitTokenView({ unit, bump, showName = true }) {
+  const footprintSize = unitSize(unit);
   const hpPct = Math.max(0, Math.min(100, ((unit.hp ?? 0) / Math.max(1, maxHp(unit))) * 100));
   const teleporting = unit.targetOverride === "homeTeleport" && unit.homeTeleportStartedAt != null;
   const teleportPct = teleporting ? Math.max(0, Math.min(100, 100 * (1 - Math.max(0, HOME_TELEPORT_SECONDS - ((unit.currentFightTime ?? 0) - unit.homeTeleportStartedAt)) / HOME_TELEPORT_SECONDS))) : 0;
+  const isJad = unit.style === "tz_tok_jad";
+  const jadSpecialRemaining = isJad && unit.jadNextSpecialAt != null ? Math.max(0, Number(unit.jadNextSpecialAt || 0) - Number(unit.currentFightTime || 0)) : null;
+  const jadSpecialPct = jadSpecialRemaining == null ? null : Math.max(0, Math.min(100, 100 * (1 - (jadSpecialRemaining / JAD_SPECIAL_INTERVAL))));
   const coreColor = unit.team === "npc" ? "#ffffff" : (TEAM_META[unit.team]?.dark || "#1c1917");
+  const overheadPrayer = activeOverheadPrayer(unit);
   const ringStyle = {
     borderColor: "transparent",
     background: `radial-gradient(circle at center, ${coreColor} 66%, transparent 68%), conic-gradient(#22c55e 0 ${hpPct}%, rgba(127,29,29,.95) ${hpPct}% 100%)`,
   };
   return (
-    <div className={`unit-token unit-size-${unitSize(unit)} ${bump ? "bump" : ""} ${unit.team === "npc" ? "npc-unit" : ""}`} title={unit.name}>
-      <div className={`unit-token-circle ${teleporting ? "teleporting" : ""} ${unit.team === "npc" ? "npc-token" : ""}`} style={ringStyle}>
+    <div className={`unit-token unit-size-${footprintSize} ${footprintSize > 1 ? "large-unit" : ""} ${bump ? "bump" : ""} ${unit.team === "npc" ? "npc-unit" : ""}`} style={footprintSize > 1 ? { "--unit-size": footprintSize } : undefined} title={unit.name}>
+      {overheadPrayer && <img className="unit-overhead-prayer" src={asset(overheadPrayer.icon)} alt={overheadPrayer.name} title={overheadPrayer.name} draggable={false} />}
+      <div className={`unit-token-circle ${teleporting ? "teleporting" : ""} ${unit.team === "npc" ? "npc-token" : ""} ${isJad ? "jad-token" : ""}`} style={ringStyle}>
+        {jadSpecialPct != null && (
+          <div
+            className="jad-special-ring"
+            title={`Next Jad special in ${Math.ceil(jadSpecialRemaining)}s`}
+            style={{ background: `conic-gradient(#facc15 0 ${jadSpecialPct}%, rgba(28,25,23,.42) ${jadSpecialPct}% 100%)` }}
+          />
+        )}
         <StyleIcon styleId={unit.style} />
         {teleporting && <div className="teleport-ring" style={{ background: `conic-gradient(#c084fc 0 ${teleportPct}%, transparent ${teleportPct}% 100%)` }} />}
         {unit.carryingFlagTeam && <div className="flag-icon-overlay" title={`Carrying ${TEAM_META[unit.carryingFlagTeam]?.name || "enemy"} flag`}>🚩</div>}
@@ -3136,9 +4036,13 @@ const UnitToken = React.memo(UnitTokenView, (prev, next) => {
     && a.name === b.name
     && a.team === b.team
     && a.carryingFlagTeam === b.carryingFlagTeam
+    && JSON.stringify(a.activePrayers || []) === JSON.stringify(b.activePrayers || [])
+    && Math.floor(Number(a.prayerPoints ?? 0) * 10) === Math.floor(Number(b.prayerPoints ?? 0) * 10)
     && a.targetOverride === b.targetOverride
     && a.homeTeleportStartedAt === b.homeTeleportStartedAt
-    && (!aTeleporting && !bTeleporting || Math.floor(Number(a.currentFightTime || 0) * 4) === Math.floor(Number(b.currentFightTime || 0) * 4));
+    && a.jadNextSpecialAt === b.jadNextSpecialAt
+    && (!aTeleporting && !bTeleporting || Math.floor(Number(a.currentFightTime || 0) * 4) === Math.floor(Number(b.currentFightTime || 0) * 4))
+    && (!(a.style === "tz_tok_jad" || b.style === "tz_tok_jad") || Math.floor(Number(a.currentFightTime || 0) * 2) === Math.floor(Number(b.currentFightTime || 0) * 2));
 });
 
 function previewMaxHit(styleId) {
@@ -3311,8 +4215,53 @@ function GearStatsPanel({ unit }) {
   );
 }
 
+function PrayerIcon({ prayer, size = "md" }) {
+  if (!prayer) return null;
+  return <img src={asset(prayer.icon)} alt={prayer.name} className={`prayer-icon prayer-icon-${size}`} draggable={false} />;
+}
+
+function UnitPrayerPanel({ unit, canEdit, onTogglePrayer }) {
+  const active = new Set(prayerIds(unit));
+  const points = currentPrayerPoints(unit);
+  const maxPoints = maxPrayerPoints(unit);
+  const pct = Math.max(0, Math.min(100, (points / Math.max(1, maxPoints)) * 100));
+  return (
+    <div className="prayer-panel">
+      <div className="prayer-points-row">
+        <span>Prayer points</span>
+        <b>{points.toFixed(1)}/{maxPoints}</b>
+      </div>
+      <div className="prayer-points-bar"><div style={{ width: `${pct}%` }} /></div>
+      <div className="prayer-grid">
+        {PRAYER_DEFS.map((prayer) => {
+          const unlocked = prayerUnlocked(unit, prayer.id);
+          const isActive = active.has(prayer.id);
+          return (
+            <button
+              key={prayer.id}
+              type="button"
+              className={`prayer-button ${isActive ? "active" : ""} ${!unlocked ? "locked" : ""} ${prayer.overhead ? "overhead" : ""}`}
+              disabled={!canEdit || !unlocked || points <= 0 || unit.team === "npc" || unit.timer != null}
+              onClick={() => onTogglePrayer?.(prayer.id)}
+              title={`${prayer.name} • Level ${prayer.level} Prayer • ${prayer.effect} • Drains 1 point per ${prayer.drainSeconds}s`}
+            >
+              <PrayerIcon prayer={prayer} size="md" />
+              <span>{prayer.level}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="muted prayer-help">Only one prayer from the same boost/overhead category can be active. Prayer drains during fights and refills when the unit dies.</p>
+    </div>
+  );
+}
+
 function currentPlayers(lobby) {
-  return Object.values(lobby?.players || {}).filter(Boolean).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
+  return Object.values(lobby?.players || {}).filter(Boolean).sort((a, b) => {
+    const cpuDelta = Number(isCpuPlayer(a)) - Number(isCpuPlayer(b));
+    if (cpuDelta) return cpuDelta;
+    return (a.joinedAt || 0) - (b.joinedAt || 0);
+  });
 }
 
 function playerForTeam(lobby, team) {
@@ -3345,7 +4294,7 @@ function allReadyForPhase(lobby, phase) {
   const players = activeGamePlayers(lobby);
   if (!players.length) return false;
   const ready = readyMap(lobby, phase);
-  return players.every((p) => ready[p.id]);
+  return players.every((p) => isCpuPlayer(p) || ready[p.id]);
 }
 
 function voteEndMap(lobby) {
@@ -3353,10 +4302,57 @@ function voteEndMap(lobby) {
 }
 
 function allVoteEndYes(lobby) {
-  const players = activeGamePlayers(lobby);
+  const players = activeGamePlayers(lobby).filter((p) => !isCpuPlayer(p));
   if (!players.length || lobby?.phase !== "fight") return false;
   const votes = voteEndMap(lobby);
   return players.every((p) => votes[p.id] === true);
+}
+
+function activeConnectedGamePlayers(lobby, now = Date.now()) {
+  return activeGamePlayers(lobby).filter((p) => {
+    if (isCpuPlayer(p)) return false;
+    if (!p.connected) return false;
+    const lastSeen = typeof p.lastSeen === "number" ? p.lastSeen : 0;
+    return !lastSeen || now - lastSeen <= RECENT_PRESENCE_GRACE_MS;
+  });
+}
+
+function resyncVoteMap(lobby) {
+  return lobby?.resyncVote?.votes || {};
+}
+
+function resyncVoteIsFresh(lobby, now = Date.now()) {
+  const requestedAt = Number(lobby?.resyncVote?.requestedAt || 0);
+  return Boolean(requestedAt && now - requestedAt <= RESYNC_VOTE_WINDOW_MS);
+}
+
+function resyncVoteSummary(lobby, now = Date.now()) {
+  const eligiblePlayers = activeConnectedGamePlayers(lobby, now);
+  const votes = resyncVoteMap(lobby);
+  const yes = eligiblePlayers.filter((p) => votes[p.id] === true).length;
+  const needed = eligiblePlayers.length ? Math.max(1, Math.floor(eligiblePlayers.length / 2) + 1) : 0;
+  return { eligiblePlayers, yes, needed, passed: Boolean(lobby?.phase === "fight" && resyncVoteIsFresh(lobby, now) && needed && yes >= needed) };
+}
+
+function resyncVotePassed(lobby, now = Date.now()) {
+  return resyncVoteSummary(lobby, now).passed;
+}
+
+function simTickAgeMs(lobby, now = Date.now()) {
+  const lastTick = Number(lobby?.game?.lastSimTickAt || 0);
+  return lastTick ? now - lastTick : 0;
+}
+
+function isFightSimStale(lobby, now = Date.now(), limit = SIM_STALE_WARNING_MS) {
+  if (lobby?.phase !== "fight") return false;
+  const age = simTickAgeMs(lobby, now);
+  return Boolean(age && age > limit);
+}
+
+function chooseFallbackHost(lobby, now = Date.now(), excludeHost = true) {
+  const players = activeConnectedGamePlayers(lobby, now).filter((p) => !excludeHost || p.id !== lobby.hostId);
+  const pool = players.length ? players : currentPlayers(lobby).filter((p) => !isCpuPlayer(p) && p.connected && (!excludeHost || p.id !== lobby.hostId));
+  return [...pool].sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || String(a.id).localeCompare(String(b.id)))[0] || null;
 }
 
 function openTeamForLobby(lobby) {
@@ -3577,6 +4573,7 @@ function lobbyCleanupWindowMs(lobby) {
 
 function lobbyHasRecentPresence(lobby, now = Date.now()) {
   return Object.values(lobby?.players || {}).some((player) => {
+    if (isCpuPlayer(player)) return false;
     const lastSeen = numberTimestamp(player?.lastSeen);
     return player?.connected && lastSeen && now - lastSeen < RECENT_PRESENCE_GRACE_MS;
   });
@@ -3624,7 +4621,7 @@ async function cleanupStaleLobbies({ protectCode = "", force = false } = {}) {
   return { checked, removed, skipped: false };
 }
 
-function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCleanupLobbies, status, cleanupStatus }) {
+function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCleanupLobbies, onOpenContentManager, status, cleanupStatus }) {
   return (
     <div className="home-screen">
       <div className="home-card">
@@ -3642,6 +4639,9 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCl
           </Button>
           <Button onClick={onCleanupLobbies}>
             Clean Old Lobbies
+          </Button>
+          <Button onClick={onOpenContentManager}>
+            Content Manager
           </Button>
           <p className="cleanup-hint">Inactive lobbies auto-clear after 24 hours. Finished results lobbies clear after 6 hours. Cleanup runs when someone opens the app, and this button runs it immediately.</p>
         </div>
@@ -3663,7 +4663,85 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCl
   );
 }
 
-function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onChooseTeam, onChooseAlliance, onLeave, onHostSetPlayerTeam, onHostKickPlayer, onHostSetHost }) {
+
+function LobbyMapPreview({ setup = DEFAULT_SETUP, players = [] }) {
+  const previewSetup = useMemo(() => ({
+    ...DEFAULT_SETUP,
+    ...(setup || {}),
+    players: clampPlayerCount(setup?.players),
+    gridSize: Number(setup?.gridSize) || DEFAULT_SETUP.gridSize,
+    baseZoneSize: baseZoneSizeFor(setup || DEFAULT_SETUP),
+    centerSize: centerSizeFor(setup || DEFAULT_SETUP),
+    mapTemplate: setup?.mapTemplate || DEFAULT_SETUP.mapTemplate,
+  }), [setup]);
+  const board = useMemo(() => makeBoard(previewSetup), [previewSetup]);
+  const teams = activeTeams(previewSetup);
+  const playersByTeam = useMemo(() => {
+    const out = {};
+    for (const p of players || []) if (p?.team) out[p.team] = p;
+    return out;
+  }, [players]);
+  const centerLabel = `${centerSizeFor(previewSetup)}x${centerSizeFor(previewSetup)} middle`;
+  return (
+    <section className="card lobby-map-preview-card">
+      <div className="lobby-map-preview-header">
+        <div>
+          <h3>Map Preview</h3>
+          <p>{MAP_TEMPLATES[previewSetup.mapTemplate || "classic"]?.name || "Classic"} • {sizeOf(previewSetup)}x{sizeOf(previewSetup)} • {centerLabel}</p>
+        </div>
+        <div className="map-preview-legend">
+          <span><i className="legend-road" /> road</span>
+          <span><i className="legend-water" /> water</span>
+          <span><i className="legend-tree" /> tree</span>
+          <span><i className="legend-rock" /> rock</span>
+          <span><i className="legend-wall" /> wall</span>
+          <span><i className="legend-center" /> middle</span>
+        </div>
+      </div>
+      <div className="lobby-map-preview-wrap">
+        <div
+          className="lobby-minimap"
+          style={{ gridTemplateColumns: `repeat(${sizeOf(previewSetup)}, minmax(0, 1fr))` }}
+          aria-label="Selected map layout preview"
+        >
+          {board.flatMap((row) => row.map((cell) => {
+            const baseTeam = baseTeamAt(cell.row, cell.col, previewSetup);
+            const baseZoneTeam = teams.find((team) => isInBaseZone(cell.row, cell.col, team, previewSetup));
+            const ownerMeta = TEAM_META[cell.owner] || TEAM_META[baseZoneTeam] || null;
+            const baseIndex = baseTeam ? teams.indexOf(baseTeam) + 1 : null;
+            const playerAtBase = baseTeam ? playersByTeam[baseTeam] : null;
+            const titleBits = [`${cell.row},${cell.col}`, cell.type, cell.owner];
+            if (baseTeam) titleBits.push(`${TEAM_META[baseTeam]?.name || baseTeam} spawn${playerAtBase ? `: ${playerAtBase.name}` : " open"}`);
+            return (
+              <div
+                key={`${cell.row}-${cell.col}`}
+                className={`minimap-cell minimap-${cell.type || "empty"} ${cell.owner === "void" ? "minimap-void" : ""} ${isCenterCell(cell.row, cell.col, previewSetup) ? "minimap-center" : ""} ${baseZoneTeam ? "minimap-base-zone" : ""} ${baseTeam ? "minimap-base-cell" : ""}`}
+                style={{ "--owner-color": ownerMeta?.color || "#777", "--owner-dark": ownerMeta?.dark || "#222" }}
+                title={titleBits.join(" • ")}
+              >
+                {baseTeam && <span className="minimap-base-marker">{baseIndex}</span>}
+              </div>
+            );
+          }))}
+        </div>
+        <div className="map-spawn-list">
+          {teams.map((team, index) => {
+            const p = playersByTeam[team];
+            return (
+              <div key={team} className="map-spawn-row" style={{ "--team-color": TEAM_META[team]?.color || "#888" }}>
+                <span className="map-spawn-dot">{index + 1}</span>
+                <b>{TEAM_META[team]?.name || team}</b>
+                <span>{p ? `${p.name}${isCpuPlayer(p) ? " (CPU)" : ""}` : "Open"}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onChooseTeam, onChooseAlliance, onLeave, onHostSetPlayerTeam, onHostKickPlayer, onHostSetHost, onHostAddCpu }) {
   const players = currentPlayers(lobby);
   const player = lobby.players?.[playerId];
   const enoughPlayers = activeGamePlayers(lobby).length >= 2 && activeGamePlayers(lobby).length === activeTeams(lobby.setup).length;
@@ -3695,7 +4773,7 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
               return (
                 <div className="player-row player-row-hostable" key={p.id}>
                   <span className={`connection-dot ${p.connected ? "on" : ""}`} />
-                  <span className="player-name">{p.name}</span>
+                  <span className="player-name">{p.name} {isCpuPlayer(p) && <span className="cpu-badge">CPU</span>}</span>
                   <span className="player-team-label">{p.team ? `${TEAM_META[p.team].emoji} ${TEAM_META[p.team].name}` : "Spectator"}</span>
                   {Boolean(lobby.setup?.teamMode && p.team) && (
                     <label className="player-alliance-picker">
@@ -3726,13 +4804,19 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
                         ))}
                       </select>
                       <Button onClick={() => onHostSetHost?.(p.id)} disabled={lobby.hostId === p.id || !p.connected}>Make Host</Button>
-                      <Button onClick={() => onHostKickPlayer?.(p.id)} disabled={p.id === playerId}>Remove</Button>
+                      <Button onClick={() => onHostKickPlayer?.(p.id)} disabled={p.id === playerId}>{isCpuPlayer(p) ? "Remove CPU" : "Remove"}</Button>
                     </div>
                   )}
                 </div>
               );
             })}
           </div>
+          {isHost && (
+            <div className="cpu-lobby-actions">
+              <Button onClick={() => onHostAddCpu?.()} disabled={!openTeamForLobby(lobby)}>Add CPU Player</Button>
+              <span>{openTeamForLobby(lobby) ? `Fills next open slot: ${TEAM_META[openTeamForLobby(lobby)]?.name || openTeamForLobby(lobby)}.` : "All active slots are filled."}</span>
+            </div>
+          )}
         </div>
 
         <div className="card lobby-settings-card">
@@ -3839,50 +4923,75 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
               <label className="toggle-check lobby-toggle-row">
                 <input disabled={!isHost} type="checkbox" checked={Boolean(lobby.setup.npcSpawns)} onChange={(e) => onUpdateSetup({ npcSpawns: e.target.checked })} /> NPC spawns
               </label>
-              <div className="npc-list-box wide-npc-box npc-config-card">
-                <b>Goblin</b>
-                <div className="npc-inline-controls">
-                  <label>
-                    Spawned goblins
-                    <input disabled={!isHost || !lobby.setup.npcSpawns} type="number" min="0" max="10" value={lobby.setup.goblinSpawnAmount ?? lobby.setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount} onChange={(e) => onUpdateSetup({ goblinSpawnAmount: Number(e.target.value), npcSpawnAmount: Number(e.target.value) })} />
-                  </label>
-                  <label>
-                    Goblin spawn rate
-                    <select disabled={!isHost || !lobby.setup.npcSpawns} value={lobby.setup.goblinSpawnInterval ?? lobby.setup.npcSpawnInterval ?? DEFAULT_SETUP.goblinSpawnInterval} onChange={(e) => onUpdateSetup({ goblinSpawnInterval: Number(e.target.value), npcSpawnInterval: Number(e.target.value) })}>
-                      <option value={30}>Every 30 seconds</option>
-                      <option value={60}>Every 1 minute</option>
-                      <option value={120}>Every 2 minutes</option>
-                      <option value={300}>Every 5 minutes</option>
-                    </select>
-                  </label>
-                </div>
-                <span>{lobby.setup.npcSpawns ? `Center-area spawn every ${formatDuration(lobby.setup.goblinSpawnInterval ?? lobby.setup.npcSpawnInterval ?? DEFAULT_SETUP.goblinSpawnInterval)} • ${lobby.setup.goblinSpawnAmount ?? lobby.setup.npcSpawnAmount ?? DEFAULT_SETUP.goblinSpawnAmount} max alive` : "Disabled"}</span>
-                <span>30 HP • 10 Atk / 10 Str / 10 Def / 10 Mag • Speed 3</span>
-                <span>Always drops Bones ({GEAR_ITEMS.bones.prayerXp} Prayer XP).</span>
-                <span>Roll table: {goblinLootChanceRows().map((row) => row.type === "gold" ? `Gold ${chanceLabel(row.chance)}` : `${itemById(row.itemId)?.name || row.itemId} ${chanceLabel(row.chance)}`).join(" • ")}</span>
-              </div>
-              <div className="npc-list-box wide-npc-box npc-config-card">
-                <b>Hill Giant</b>
-                <div className="npc-inline-controls">
-                  <label>
-                    Spawned hill giants
-                    <input disabled={!isHost || !lobby.setup.npcSpawns} type="number" min="0" max="5" value={lobby.setup.hillGiantSpawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount} onChange={(e) => onUpdateSetup({ hillGiantSpawnAmount: Number(e.target.value) })} />
-                  </label>
-                  <label>
-                    Hill giant spawn rate
-                    <select disabled={!isHost || !lobby.setup.npcSpawns} value={lobby.setup.hillGiantSpawnInterval ?? DEFAULT_SETUP.hillGiantSpawnInterval} onChange={(e) => onUpdateSetup({ hillGiantSpawnInterval: Number(e.target.value) })}>
-                      <option value={30}>Every 30 seconds</option>
-                      <option value={60}>Every 1 minute</option>
-                      <option value={120}>Every 2 minutes</option>
-                      <option value={300}>Every 5 minutes</option>
-                    </select>
-                  </label>
-                </div>
-                <span>{lobby.setup.npcSpawns ? `2x2 center-area spawn every ${formatDuration(lobby.setup.hillGiantSpawnInterval ?? DEFAULT_SETUP.hillGiantSpawnInterval)} • ${lobby.setup.hillGiantSpawnAmount ?? DEFAULT_SETUP.hillGiantSpawnAmount} max alive` : "Disabled"}</span>
-                <span>100 HP • 30 Atk / 30 Str / 30 Def / 1 Mag / 1 Rng / 1 Prayer • Speed 5</span>
-                <span>Always drops Big Bones ({GEAR_ITEMS.big_bones.prayerXp} Prayer XP, {GEAR_ITEMS.big_bones.sellValue}gp).</span>
-                <span>Roll table: {hillGiantLootChanceRows().map((row) => row.type === "gold" ? `Gold ${chanceLabel(row.chance)} (${row.min}-${row.max}g)` : `${itemById(row.itemId)?.name || row.itemId} ${chanceLabel(row.chance)}${row.max ? ` (${row.min || 1}-${row.max})` : ""}`).join(" • ")}</span>
-              </div>
+              {NPC_STYLE_IDS.map((styleId) => {
+                const style = styleDefinition(styleId);
+                const setting = npcSpawnSettingFor(lobby.setup, styleId);
+                const settings = lobby.setup.npcSpawnSettings || {};
+                const nextSettings = (patch) => ({ ...settings, [styleId]: { ...setting, ...(settings[styleId] || {}), ...patch } });
+                return (
+                  <div key={styleId} className="npc-list-box wide-npc-box npc-config-card">
+                    <div className="npc-card-header">
+                      <img src={asset(style.file)} alt={style.name} draggable={false} />
+                      <div>
+                        <b>{style.name}</b>
+                        <span>{unitSize({ style: styleId })}x{unitSize({ style: styleId })} • {style.combatType || "melee"}</span>
+                      </div>
+                    </div>
+                    <div className="npc-inline-controls">
+                      <label>
+                        Amount per spawn
+                        <input disabled={!isHost || !lobby.setup.npcSpawns} type="number" min="0" max="20" value={setting.amount} onChange={(e) => onUpdateSetup({ npcSpawnSettings: nextSettings({ amount: Number(e.target.value) }), ...(styleId === "goblin" ? { goblinSpawnAmount: Number(e.target.value), npcSpawnAmount: Number(e.target.value) } : {}), ...(styleId === "hill_giant" ? { hillGiantSpawnAmount: Number(e.target.value) } : {}) })} />
+                      </label>
+                      <label>
+                        Allowed on map at a time
+                        <input
+                          disabled={!isHost || !lobby.setup.npcSpawns}
+                          type="number"
+                          min="0"
+                          max="999"
+                          step="1"
+                          value={setting.maxAlive || 0}
+                          onChange={(e) => onUpdateSetup({ npcSpawnSettings: nextSettings({ maxAlive: clampNpcMaxAlive(e.target.value, setting.maxAlive || 0) }) })}
+                        />
+                      </label>
+                      <label>
+                        Seconds until respawn
+                        <input
+                          disabled={!isHost || !lobby.setup.npcSpawns}
+                          type="number"
+                          min={MIN_NPC_SPAWN_INTERVAL}
+                          max={MAX_NPC_SPAWN_INTERVAL}
+                          step="1"
+                          value={setting.interval}
+                          onChange={(e) => {
+                            const interval = clampNpcSpawnInterval(e.target.value, setting.interval);
+                            onUpdateSetup({
+                              npcSpawnSettings: nextSettings({ interval }),
+                              ...(styleId === "goblin" ? { goblinSpawnInterval: interval, npcSpawnInterval: interval } : {}),
+                              ...(styleId === "hill_giant" ? { hillGiantSpawnInterval: interval } : {}),
+                            });
+                          }}
+                        />
+                      </label>
+                      <label>
+                        Number of respawns per match
+                        <input
+                          disabled={!isHost || !lobby.setup.npcSpawns}
+                          type="number"
+                          min="0"
+                          max="999"
+                          step="1"
+                          value={setting.maxSpawns || 0}
+                          onChange={(e) => onUpdateSetup({ npcSpawnSettings: nextSettings({ maxSpawns: clampNpcMaxSpawns(e.target.value, setting.maxSpawns || 0) }) })}
+                        />
+                      </label>
+                    </div>
+                    <span>{lobby.setup.npcSpawns ? `${unitSize({ style: styleId })}x${unitSize({ style: styleId })} center-area spawn every ${formatDuration(setting.interval)} • ${setting.amount} per spawn • ${(setting.maxAlive || 0) === 0 ? "unlimited" : setting.maxAlive} allowed on map • ${(setting.maxSpawns || 0) === 0 ? "unlimited" : setting.maxSpawns} respawn triggers per match` : "Disabled"}</span>
+                    <span>{npcStatsSummary(styleId)}</span>
+                    <span>Loot: {npcDropSummary(styleId)}</span>
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -3894,6 +5003,8 @@ function LobbyView({ lobby, playerId, isHost, onUpdateSetup, onStartBuild, onCho
           )}
         </div>
       </section>
+
+      <LobbyMapPreview setup={lobby.setup || DEFAULT_SETUP} players={players} />
 
       <section className="card">
         <h3>Choose Team</h3>
@@ -3954,11 +5065,11 @@ function ReadyPanel({ lobby, playerId, phase, onToggleReady, isHost, onAdvance, 
       <div className="ready-list">
         {players.map((p) => {
           const needsConnection = phase === "build" && p.team && connectionStatus && connectionStatus[p.team] === false;
-          const statusText = ready[p.id] ? "Ready" : needsConnection ? "Needs connection" : "Waiting";
+          const statusText = isCpuPlayer(p) ? CPU_READY_TEXT : ready[p.id] ? "Ready" : needsConnection ? "Needs connection" : "Waiting";
           return (
             <div key={p.id} className="ready-row">
               <span>{TEAM_META[p.team]?.emoji} {p.name}</span>
-              <Pill tone={ready[p.id] ? "ready" : "waiting"}>{statusText}</Pill>
+              <Pill tone={(ready[p.id] || isCpuPlayer(p)) ? "ready" : "waiting"}>{statusText}</Pill>
             </div>
           );
         })}
@@ -3989,7 +5100,7 @@ function PhaseReadyTopBar({ lobby, player, phase, onToggleReady, isHost, onAdvan
       <label className="toggle-check ready-toggle">
         <input type="checkbox" checked={meReady} onChange={handleToggle} /> {title} finalized
       </label>
-      <span className="ready-mini">{players.map((p) => `${p.name}:${ready[p.id] ? "yes" : "no"}`).join(" • ")}</span>
+      <span className="ready-mini">{players.map((p) => `${p.name}:${isCpuPlayer(p) ? "cpu" : ready[p.id] ? "yes" : "no"}`).join(" • ")}</span>
       {isHost && <Button onClick={onAdvance} disabled={!canAdvance} variant="primary">{advanceText}</Button>}
     </div>
   );
@@ -4073,8 +5184,15 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
         const nextNpcSpawnAt = Number(nextByStyle[cfg.style] ?? (cfg.style === "goblin" ? game.nextNpcSpawnAt : undefined) ?? cfg.interval ?? NPC_SPAWN_INTERVAL);
         const secondsUntilNpcSpawn = nextNpcSpawnAt - fightTime;
         if (!(secondsUntilNpcSpawn > 0 && secondsUntilNpcSpawn <= SPAWN_WARNING_SECONDS)) continue;
+        const observed = npcObservedSpawnStats(game, cfg, previewUnits);
+        const respawnsSoFar = Math.max(0, Number(observed.respawns || 0));
+        const remainingRespawns = cfg.maxSpawns > 0 ? Math.max(0, cfg.maxSpawns - respawnsSoFar) : Infinity;
+        if (remainingRespawns <= 0) continue;
         const alive = previewUnits.filter((u) => u.team === "npc" && u.style === cfg.style && u.hp > 0).length;
-        const toPreview = Math.max(0, cfg.amount - alive);
+        const allowedOnMap = cfg.maxAlive > 0 ? cfg.maxAlive : Infinity;
+        const roomOnMap = Math.max(0, allowedOnMap - alive);
+        const toPreview = Math.min(cfg.amount, roomOnMap);
+        if (toPreview <= 0) continue;
         const planned = plannedNpcSpawnCells(setup, previewUnits, cfg.style, toPreview, game.board);
         planned.forEach((cell, i) => {
           add(cell.row, cell.col, { id: `npc-pending-${cfg.style}-${Math.round(nextNpcSpawnAt)}-${i}`, kind: "pending", team: "npc", style: cfg.style, timer: secondsUntilNpcSpawn });
@@ -4083,14 +5201,16 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
       }
     }
     return map;
-  }, [game.effects, game.nextNpcSpawnAt, game.nextNpcSpawnAtByStyle, game.fightTime, game.units, game.board, setup]);
+  }, [game.effects, game.nextNpcSpawnAt, game.nextNpcSpawnAtByStyle, game.npcRespawnTotals, game.npcSpawnedTotals, game.unitArchive, game.fightTime, game.units, game.board, setup]);
 
   const activeTeam = player?.team;
   const showHitsplats = visualToggles.showHitsplats !== false;
   const showUnitNames = visualToggles.showUnitNames !== false;
   const [hoverUnit, setHoverUnit] = useState(null);
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
   const panRef = useRef(null);
+  const ignorePanClickRef = useRef(false);
   const wrapRef = useRef(null);
   const boardRef = useRef(null);
   const largeBoard = size >= 24;
@@ -4155,10 +5275,18 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
   useEffect(() => {
     const onMove = (e) => {
       if (!panRef.current) return;
+      e.preventDefault();
       const start = panRef.current;
-      setView(() => constrainView({ zoom: start.zoom, x: start.x + (e.clientX - start.clientX), y: start.y + (e.clientY - start.clientY) }));
+      const dx = e.clientX - start.clientX;
+      const dy = e.clientY - start.clientY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) ignorePanClickRef.current = true;
+      setView(() => constrainView({ zoom: start.zoom, x: start.x + dx, y: start.y + dy }));
     };
-    const onUp = () => { panRef.current = null; };
+    const onUp = () => {
+      if (!panRef.current) return;
+      panRef.current = null;
+      setIsPanning(false);
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
@@ -4167,14 +5295,29 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     };
   }, [largeBoard]);
 
+  const beginPan = (e) => {
+    if (!largeBoard) return;
+    const fromControls = e.target?.closest?.(".board-view-controls");
+    const isMiddlePan = e.button === 1;
+    const isShiftLeftPan = e.button === 0 && e.shiftKey && !fromControls;
+    if (!isMiddlePan && !isShiftLeftPan) return;
+    e.preventDefault();
+    e.stopPropagation();
+    ignorePanClickRef.current = true;
+    panRef.current = { clientX: e.clientX, clientY: e.clientY, x: view.x, y: view.y, zoom: view.zoom };
+    setIsPanning(true);
+  };
+
   return (
     <div
       ref={wrapRef}
-      className={`board-wrap ${largeBoard ? "large-board" : ""} ${panRef.current ? "is-panning" : ""}`}
-      onMouseDown={(e) => {
-        if (e.button !== 1) return;
+      className={`board-wrap ${largeBoard ? "large-board" : ""} ${isPanning ? "is-panning" : ""}`}
+      onMouseDown={beginPan}
+      onClickCapture={(e) => {
+        if (!ignorePanClickRef.current) return;
+        ignorePanClickRef.current = false;
         e.preventDefault();
-        panRef.current = { clientX: e.clientX, clientY: e.clientY, x: view.x, y: view.y, zoom: view.zoom };
+        e.stopPropagation();
       }}
       onAuxClick={(e) => { if (e.button === 1) e.preventDefault(); }}
     >
@@ -4184,7 +5327,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
         <button type="button" onClick={() => setZoom(view.zoom * 1.12)}>+</button>
         <button type="button" onClick={() => setZoom(view.zoom * 0.88)}>-</button>
         <button type="button" onClick={resetView}>Reset</button>
-        <small>Scroll zoom in/out • middle-drag pan</small>
+        <small>Scroll zoom • middle-drag or Shift+drag pan</small>
       </div>
       <div className="board-pan-scene" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
         <div ref={boardRef} className="board" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
@@ -4198,6 +5341,8 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const cellEffects = effectsByCell.get(key(cell.row, cell.col)) || [];
           const cellGroundItems = groundItemsByCell.get(key(cell.row, cell.col)) || [];
           const spawnIndicators = spawnIndicatorsByCell.get(key(cell.row, cell.col)) || [];
+          const hasSplats = cellSplats.length > 0;
+          const hasSpawnIndicators = spawnIndicators.length > 0;
           const buildLimited = lobby.phase === "build";
           const buildVisible = !buildLimited || !activeTeam || cell.owner === activeTeam || isCenterCell(cell.row, cell.col, setup);
           const buildHidden = buildLimited && !buildVisible;
@@ -4239,7 +5384,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                   onGroundItemsContextMenu(e, cellGroundItems, cell);
                 }
               }}
-              className={`cell ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
+              className={`cell ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
               style={style}
               title={title}
             >
@@ -4257,7 +5402,19 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                     </div>
                   ))}
                   <div className="cell-content">
-                    {spawnIndicators.slice(-2).map((indicator) => <img key={indicator.id} className={`spawn-pentagram spawn-${indicator.kind}`} src={asset("pentagram.png")} alt="Spawn marker" draggable={false} />)}
+                    {spawnIndicators.slice(-2).map((indicator) => {
+                      const spawnSize = Math.max(1, unitSize(indicator));
+                      return (
+                        <img
+                          key={indicator.id}
+                          className={`spawn-pentagram spawn-${indicator.kind} spawn-size-${spawnSize}`}
+                          style={{ "--spawn-size": spawnSize }}
+                          src={asset("pentagram.png")}
+                          alt="Spawn marker"
+                          draggable={false}
+                        />
+                      );
+                    })}
                     {baseTeam ? <BaseIcon team={baseTeam} /> : cell.owner === "void" && visibleType === "empty" ? "×" : fogged ? "?" : visibleType === "empty" ? "·" : TILE[visibleType]?.image ? <img className="tile-object-icon" src={asset(TILE[visibleType].image)} alt={TILE[visibleType].name} /> : visibleType === "wall" ? TILE[visibleType].icon : ""}
                     {!fogged && cellGroundItems.length > 0 && (
                       <div className="ground-item-stack" title={cellGroundItems.map((entry) => `${itemLabel(entry)} • ${groundItemRemainingSeconds(entry, game.fightTime || 0)}s`).join("\n")}>
@@ -4307,7 +5464,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
   );
 }
 
-function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isHost, onAdvance, onSetOrder }) {
+function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isHost, onAdvance, onSetOrder, onRepairCpuPaths }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const connections = Object.fromEntries(teams.map((team) => [team, teamConnectedToCenter(game.board, team, game.setup)]));
@@ -4323,6 +5480,9 @@ function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isH
           <div className={`connection-banner ${connections[player.team] ? "connected" : "missing"}`}>
             <span>{connections[player.team] ? "✓ Connected to center" : "Needs path to center"}</span>
           </div>
+        )}
+        {isHost && cpuTeamsInLobby(lobby).some((team) => !connections[team]) && (
+          <Button onClick={onRepairCpuPaths} variant="primary">Repair CPU paths</Button>
         )}
         <div className="tool-grid">
           {Object.keys(TILE).map((type) => (
@@ -4359,7 +5519,7 @@ function BuildPanel({ lobby, player, selectedTool, setSelectedTool, onReady, isH
   );
 }
 
-function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, onEquipItem, onUnequipItem, onUpdateUnit, onRemoveUnit, onReady, isHost, onAdvance }) {
+function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, onOpenLootContextMenu, onEquipItem, onUnequipItem, onUpdateUnit, onRemoveUnit, onReady, isHost, onAdvance }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const allUnits = arrayFromObject(game.units);
@@ -4399,7 +5559,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
         {overLimitTeams.length > 0 && <p className="warning-text">Over unit cap: {overLimitTeams.map((team) => TEAM_META[team]?.name).join(", ")}. Sell units until every team is at the max before the fight can start.</p>}
         <div className="shop-tabs">
           <button className={shopTab === "units" ? "active" : ""} onClick={() => setShopTab("units")}>Units</button>
-          <button className={shopTab === "gear" ? "active" : ""} onClick={() => setShopTab("gear")}>Gear</button>
+          <button className={shopTab === "gear" ? "active" : ""} onClick={() => setShopTab("gear")}>Shop</button>
         </div>
         {shopTab === "units" ? (
           <>
@@ -4442,36 +5602,45 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
               if (Number.isFinite(fromIndex)) onSellInventoryItem?.(fromIndex);
             }}
           >
-            <div className="market-drop-hint">Drop loot here to sell it for 50% value. Sold items appear here for any player to buy.</div>
-            {groupedMarketItemsArray(game).length === 0 && SHOP_GEAR_ITEM_IDS.length === 0 && <p className="muted empty-shop-note">No gear is stocked yet. Future loot sold by players will appear here.</p>}
-            {SHOP_GEAR_ITEM_IDS.map((itemId) => {
-              const item = itemById(itemId);
-              return (
-                <button className="gear-card" key={`shop-${itemId}`} onClick={() => onBuyMarketItem?.({ itemId, price: item.cost, shop: true })}>
+            <div className="market-drop-hint">Drop loot here to sell it for 50% value. Sold items appear in the Shop for any player to buy. Expand an item to view stats and buy it.</div>
+            {groupedMarketItemsArray(game).length === 0 && shopItemEntries(game).length === 0 && <p className="muted empty-shop-note">No shop items are stocked yet. Future loot sold by players will appear here.</p>}
+            {shopItemEntries(game).map(({ item, itemId, price, remaining, infinite }) => (
+              <details className="gear-card shop-item-details" key={`shop-${itemId}`}>
+                <summary className="shop-item-summary">
                   <GearIcon item={{ itemId }} slot={item.slot} size="lg" />
                   <div>
                     <b>{item.name}</b>
-                    <span>{item.cost}g • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot} • unlimited stock</span>
-                    <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
+                    <span>{price}g • {item.type || "item"} • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot} • {infinite ? "unlimited stock" : `stock ${remaining}`}</span>
                   </div>
-                </button>
-              );
-            })}
+                </summary>
+                <div className="shop-item-expanded">
+                  <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
+                  {item.notes && <small>{item.notes}</small>}
+                  <Button type="button" onClick={() => onBuyMarketItem?.({ itemId, price, shop: true })}>Buy for {price}g</Button>
+                </div>
+              </details>
+            ))}
             {groupedMarketItemsArray(game).map((entry) => {
               const item = itemById(entry);
               const firstKey = entry.keys?.[0] || entry.key;
               return (
-                <button className="gear-card stacked-gear-card" key={`${item.id}-${entry.price}`} onClick={() => onBuyMarketItem?.(firstKey)}>
-                  <div className="gear-stack-icon-wrap">
-                    <GearIcon item={entry} slot={item.slot} size="lg" />
-                    <span className="gear-stock-badge">x{entry.stock}</span>
-                  </div>
-                  <div>
-                    <b>{item.name}</b>
-                    <span>{entry.price ?? item.cost}g • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot}{item.twoHanded ? " • 2H" : ""} • stock {entry.stock}</span>
+                <details className="gear-card stacked-gear-card shop-item-details" key={`${item.id}-${entry.price}`}>
+                  <summary className="shop-item-summary">
+                    <div className="gear-stack-icon-wrap">
+                      <GearIcon item={entry} slot={item.slot} size="lg" />
+                      <span className="gear-stock-badge">x{entry.stock}</span>
+                    </div>
+                    <div>
+                      <b>{item.name}</b>
+                      <span>{entry.price ?? item.cost}g • {item.type || "item"} • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot}{item.twoHanded ? " • 2H" : ""} • stock {entry.stock}</span>
+                    </div>
+                  </summary>
+                  <div className="shop-item-expanded">
                     <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
+                    {item.notes && <small>{item.notes}</small>}
+                    <Button type="button" onClick={() => onBuyMarketItem?.(firstKey)}>Buy for {entry.price ?? item.cost}g</Button>
                   </div>
-                </button>
+                </details>
               );
             })}
           </div>
@@ -4482,7 +5651,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
 
       <section className="card compact loot-card">
         <h3>Current Loot</h3>
-        <p className="muted">Drag loot onto a unit to equip it automatically. Drop loot on the Gear tab to sell it for 50% value. Click equipped non-default gear to unequip it.</p>
+        <p className="muted">Drag loot onto a unit to equip it automatically. Drop loot on the Shop tab to sell it for 50% value. Click equipped non-default gear to unequip it.</p>
         <div className="inventory-grid">
           {inventory.map((entry, index) => {
             const item = itemById(entry);
@@ -4497,7 +5666,8 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
                   e.dataTransfer.effectAllowed = "move";
                   setInventoryDragPreview(e, entry);
                 }}
-                title={item ? gearBonusSummary(entry) : "Empty loot slot"}
+                onContextMenu={(e) => onOpenLootContextMenu?.(e, index)}
+                title={item ? `${gearBonusSummary(entry)} • Right-click to sell X/all.` : "Empty loot slot"}
               >
                 {item ? <><GearIcon item={entry} slot={item.slot} /><small>{item.name}</small>{itemQuantity(entry) > 1 && <span className="inventory-qty-badge">x{itemQuantity(entry)}</span>}<div className="inventory-tooltip"><b>{item.name}{itemQuantity(entry) > 1 ? ` x${itemQuantity(entry)}` : ""}</b><span>{gearBonusSummary(entry)}</span></div></> : <span className="empty-slot-label">{index + 1}</span>}
               </div>
@@ -4664,7 +5834,7 @@ function ResourceInfoCard({ game, selectedResource, onClose }) {
   );
 }
 
-function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, selectedResource, setSelectedResource, onUpdateUnit, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem }) {
+function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, selectedResource, setSelectedResource, onUpdateUnit, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem, onUnequipItem }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const units = arrayFromObject(game.units);
@@ -4677,7 +5847,7 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
       <section className="card compact">
         <h3>Selected Info</h3>
         {selectedUnit ? (
-          <UnitInfoCard lobby={lobby} unit={selectedUnit} player={player} onUpdateUnit={onUpdateUnit} onClose={() => setSelectedUnitId(null)} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={onBeginManualTarget} onEquipItem={onEquipItem} />
+          <UnitInfoCard lobby={lobby} unit={selectedUnit} player={player} onUpdateUnit={onUpdateUnit} onClose={() => setSelectedUnitId(null)} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={onBeginManualTarget} onEquipItem={onEquipItem} onUnequipItem={onUnequipItem} />
         ) : selectedResource ? (
           <ResourceInfoCard game={game} selectedResource={selectedResource} onClose={() => setSelectedResource(null)} />
         ) : (
@@ -4716,6 +5886,27 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
         </section>
       )}
 
+      {game.setup.npcSpawns && (
+        <section className="card compact npc-tracker-card">
+          <h3>NPC Tracker</h3>
+          <div className="npc-tracker-list">
+            {npcTrackerRows(game).map((row) => (
+              <div key={`npc-track-${row.style}`} className="npc-tracker-row">
+                <div className="npc-tracker-title">
+                  <StyleIcon styleId={row.style} />
+                  <b>{STYLE[row.style]?.name || row.style}</b>
+                </div>
+                <span>Alive <b>{row.alive}/{row.maxAlive > 0 ? row.maxAlive : "∞"}</b></span>
+                <span title="NPC bodies created this match">Bodies <b>{npcSpawnedDisplay(row.spawned, row.maxBodies)}</b></span>
+                <span title="Successful spawn timer triggers used this match">Respawns <b>{npcRespawnDisplay(row.respawns, row.maxSpawns)}</b></span>
+              </div>
+            ))}
+            {npcTrackerRows(game).length === 0 && <p className="muted">No NPCs configured to spawn.</p>}
+          </div>
+          <p className="muted">Bodies counts NPCs created. Respawns counts successful timer triggers. Both also infer from live/dead NPCs if Firebase counters lag.</p>
+        </section>
+      )}
+
       <section className="card compact">
         <h3>Kill Feed</h3>
         <div className="kill-feed left-feed">
@@ -4737,12 +5928,18 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
   );
 }
 
-function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem }) {
+function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem, onUnequipItem }) {
   const game = lobby.game;
   const canEdit = unit.team === player?.team;
   const style = styleDefinition(unit.style);
+  const [infoTab, setInfoTab] = useState("gear");
   const hpPct = Math.max(0, Math.min(100, (unit.hp / Math.max(1, maxHp(unit))) * 100));
   const accuracy = Math.round(100 * (unit.hitsLanded ?? 0) / Math.max(1, unit.attacksAttempted ?? 0));
+  const togglePrayer = (prayerId) => {
+    if (!canEdit || unit.team === "npc") return;
+    const nextPrayers = togglePrayerList(unit, prayerId);
+    onUpdateUnit(unit.id, { activePrayers: nextPrayers, prayerPoints: currentPrayerPoints(unit) });
+  };
   return (
     <div
       className={`unit-info-card ${canEdit ? "unit-info-dropzone" : ""}`}
@@ -4781,10 +5978,19 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
       {unitStatusLabels(unit).length > 0 && <div className="status-chip-row">{unitStatusLabels(unit).map((label) => <Pill key={label}>{label}</Pill>)}</div>}
       {passiveText(unit.style).map((text) => <p key={text} className="unit-passive detail-passive">{text}</p>)}
       <UnitStatSummary unit={unit} />
-      <div className="selected-gear-block">
-        <h4>Gear</h4>
-        <UnitEquipmentGrid unit={unit} readOnly={true} />
-        <GearStatsPanel unit={unit} />
+      <div className="selected-gear-block selected-loadout-block">
+        <div className="selected-info-tabs">
+          <button type="button" className={infoTab === "gear" ? "active" : ""} onClick={() => setInfoTab("gear")}>Gear</button>
+          <button type="button" className={infoTab === "prayers" ? "active" : ""} onClick={() => setInfoTab("prayers")}>Prayers</button>
+        </div>
+        {infoTab === "gear" ? (
+          <>
+            <UnitEquipmentGrid unit={unit} onEquipItem={onEquipItem} onUnequipItem={onUnequipItem} readOnly={!canEdit || unit.team === "npc" || unit.timer != null} />
+            <GearStatsPanel unit={unit} />
+          </>
+        ) : (
+          <UnitPrayerPanel unit={unit} canEdit={canEdit && (unit.hp ?? 0) > 0 && unit.timer == null} onTogglePrayer={togglePrayer} />
+        )}
       </div>
       <div className="unit-control-grid">
         <label>
@@ -5227,11 +6433,41 @@ export default function QuadrantsOnline() {
   const [pendingManualTargetUnitId, setPendingManualTargetUnitId] = useState(null);
   const [visualToggles, setVisualToggles] = useState({ showHitsplats: true, showUnitNames: true });
   const [contextMenu, setContextMenu] = useState(null);
+  const [clockNow, setClockNow] = useState(Date.now());
+  const [toolView, setToolView] = useState(() => (window.location.hash === "#content-manager" ? "content" : "game"));
+  const [hostKickSelectId, setHostKickSelectId] = useState("");
+  const fightTickInFlightRef = useRef(false);
+
+
+  useEffect(() => {
+    const onHashChange = () => setToolView(window.location.hash === "#content-manager" ? "content" : "game");
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  function openContentManager() {
+    window.location.hash = "content-manager";
+    setToolView("content");
+  }
+
+  function closeContentManager() {
+    if (window.location.hash === "#content-manager") {
+      history.pushState("", document.title, window.location.pathname + window.location.search);
+    }
+    setToolView("game");
+  }
+
 
   const player = lobby?.players?.[playerId] || null;
   const isHost = lobby?.hostId === playerId;
   const game = lobby?.game;
   const phase = lobby?.phase || "home";
+
+  useEffect(() => {
+    if (phase !== "fight") return undefined;
+    const id = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [phase]);
 
   useEffect(() => {
     cleanupStaleLobbies({ protectCode: lobbyCode }).then((result) => {
@@ -5297,30 +6533,55 @@ export default function QuadrantsOnline() {
 
   useEffect(() => {
     if (!lobby || !lobbyCode) return;
+    const now = Date.now();
     const host = lobby.players?.[lobby.hostId];
-    if (host?.connected) return;
     const lastSeen = typeof host?.lastSeen === "number" ? host.lastSeen : 0;
-    const hostIsStale = !host || !lastSeen || Date.now() - lastSeen > 15000;
-    if (!hostIsStale) return;
-    const connected = currentPlayers(lobby).filter((p) => p.connected && p.id !== lobby.hostId);
-    if (!connected.length) return;
-    const nextHost = [...connected].sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || String(a.id).localeCompare(String(b.id)))[0];
+    const hostPresenceStale = !host || !host.connected || !lastSeen || now - lastSeen > 15000;
+    const votePassedAndHostTickStale = lobby.phase === "fight" && resyncVotePassed(lobby, now) && isFightSimStale(lobby, now, SIM_STALE_HOST_TAKEOVER_MS);
+    if (!hostPresenceStale && !votePassedAndHostTickStale) return;
+    const nextHost = chooseFallbackHost(lobby, now, true);
     if (nextHost && lobby.hostId !== nextHost.id) {
-      update(ref(db, `lobbies/${lobbyCode}`), { hostId: nextHost.id, updatedAt: Date.now(), lastActivityAt: Date.now() });
+      const reason = votePassedAndHostTickStale ? "Resync vote moved host after a frozen simulation." : "Host migrated after stale presence.";
+      update(ref(db, `lobbies/${lobbyCode}`), {
+        hostId: nextHost.id,
+        updatedAt: now,
+        lastActivityAt: now,
+        "game/log": [reason, ...(lobby.game?.log || [])].slice(0, 8),
+      });
     }
-  }, [lobby?.hostId, lobby?.players, lobbyCode]);
+  }, [lobby?.hostId, lobby?.players, lobby?.phase, lobby?.game?.lastSimTickAt, lobby?.resyncVote, lobbyCode]);
 
   useEffect(() => {
     if (!lobby || !lobbyCode || !isHost || lobby.phase !== "fight") return;
+    fightTickInFlightRef.current = false;
     const interval = setInterval(async () => {
-      const snap = await get(ref(db, `lobbies/${lobbyCode}`));
-      const latest = snap.val();
-      if (!latest || latest.phase !== "fight" || latest.hostId !== playerId) return;
+      if (fightTickInFlightRef.current) return;
+      fightTickInFlightRef.current = true;
+      try {
+        const snap = await get(ref(db, `lobbies/${lobbyCode}`));
+        const latest = snap.val();
+        if (!latest || latest.phase !== "fight" || latest.hostId !== playerId) return;
+        const now = Date.now();
+      if (resyncVotePassed(latest, now)) {
+        const currentGame = latest.game || {};
+        await update(ref(db, `lobbies/${lobbyCode}`), {
+          resyncVote: {},
+          updatedAt: now,
+          lastActivityAt: now,
+          "game/lastSimTickAt": now,
+          "game/simTick": Number(currentGame.simTick || 0) + 1,
+          "game/splats": {},
+          "game/effects": {},
+          "game/log": [`Resync vote passed. ${latest.players?.[playerId]?.name || "Host"} refreshed the fight snapshot.`, ...(currentGame.log || [])].slice(0, 8),
+        });
+        return;
+      }
       if (allVoteEndYes(latest)) {
         const results = summarizeResults(latest.game, "vote to end");
         await update(ref(db, `lobbies/${lobbyCode}`), {
           phase: "results",
           voteEnd: {},
+          resyncVote: {},
           "game/results": results,
           "game/finished": true,
           "game/log": [`Fight ended by unanimous vote: ${results.winner || "Draw"}.`, ...(latest.game.log || [])].slice(0, 8),
@@ -5346,38 +6607,53 @@ export default function QuadrantsOnline() {
           "game/loot": nextGame.loot,
           "game/nextNpcSpawnAt": nextGame.nextNpcSpawnAt,
           "game/nextNpcSpawnAtByStyle": nextGame.nextNpcSpawnAtByStyle,
+          "game/npcSpawnedTotals": nextGame.npcSpawnedTotals || {},
+          "game/npcRespawnTotals": nextGame.npcRespawnTotals || {},
           "game/killFeed": nextGame.killFeed,
           "game/splats": nextGame.splats,
           "game/effects": nextGame.effects,
           "game/groundItems": nextGame.groundItems,
           "game/fightTime": nextGame.fightTime,
+          "game/lastSimTickAt": now,
+          "game/simTick": Number(latest.game?.simTick || 0) + 1,
           "game/log": [`Fight ended: ${results.winner || "Draw"}.`, ...(nextGame.log || [])].slice(0, 8),
         });
       } else {
+        const previousGame = latest.game || {};
         const gamePatch = {
-          units: nextGame.units,
-          respawnQueue: nextGame.respawnQueue,
-          unitArchive: nextGame.unitArchive,
-          bases: nextGame.bases,
-          ctfScores: nextGame.ctfScores,
-          kothScores: nextGame.kothScores,
-          kothController: nextGame.kothController,
-          gold: nextGame.gold,
-          loot: nextGame.loot,
-          nextNpcSpawnAt: nextGame.nextNpcSpawnAt,
-          nextNpcSpawnAtByStyle: nextGame.nextNpcSpawnAtByStyle,
-          killFeed: nextGame.killFeed,
-          splats: nextGame.splats,
-          effects: nextGame.effects,
-          groundItems: nextGame.groundItems,
           fightTime: nextGame.fightTime,
-          log: nextGame.log,
+          lastSimTickAt: now,
+          simTick: Number(previousGame.simTick || 0) + 1,
         };
+        patchIfChanged(gamePatch, previousGame, "units", nextGame.units);
+        patchIfChanged(gamePatch, previousGame, "respawnQueue", nextGame.respawnQueue);
+        patchIfChanged(gamePatch, previousGame, "unitArchive", nextGame.unitArchive);
+        patchIfChanged(gamePatch, previousGame, "bases", nextGame.bases);
+        patchIfChanged(gamePatch, previousGame, "ctfScores", nextGame.ctfScores);
+        patchIfChanged(gamePatch, previousGame, "kothScores", nextGame.kothScores);
+        patchIfChanged(gamePatch, previousGame, "kothController", nextGame.kothController);
+        patchIfChanged(gamePatch, previousGame, "gold", nextGame.gold);
+        patchIfChanged(gamePatch, previousGame, "loot", nextGame.loot);
+        patchIfChanged(gamePatch, previousGame, "nextNpcSpawnAt", nextGame.nextNpcSpawnAt);
+        patchIfChanged(gamePatch, previousGame, "nextNpcSpawnAtByStyle", nextGame.nextNpcSpawnAtByStyle);
+        patchIfChanged(gamePatch, previousGame, "npcSpawnedTotals", nextGame.npcSpawnedTotals || {});
+        patchIfChanged(gamePatch, previousGame, "npcRespawnTotals", nextGame.npcRespawnTotals || {});
+        patchIfChanged(gamePatch, previousGame, "killFeed", nextGame.killFeed);
+        patchIfChanged(gamePatch, previousGame, "splats", nextGame.splats);
+        patchIfChanged(gamePatch, previousGame, "effects", nextGame.effects);
+        patchIfChanged(gamePatch, previousGame, "groundItems", nextGame.groundItems);
+        patchIfChanged(gamePatch, previousGame, "log", nextGame.log);
         if (nextGame._boardDirty) gamePatch.board = nextGame.board;
         await update(ref(db, `lobbies/${lobbyCode}/game`), gamePatch);
       }
+      } finally {
+        fightTickInFlightRef.current = false;
+      }
     }, FIGHT_TICK_MS);
-    return () => clearInterval(interval);
+    return () => {
+      fightTickInFlightRef.current = false;
+      clearInterval(interval);
+    };
   }, [lobby?.phase, lobby?.hostId, lobbyCode, playerId, isHost]);
 
   useEffect(() => {
@@ -5527,6 +6803,7 @@ export default function QuadrantsOnline() {
     }
     if (Object.prototype.hasOwnProperty.call(patch, "gridSize") && !Object.prototype.hasOwnProperty.call(patch, "baseZoneSize")) nextSetup.baseZoneSize = Number(nextSetup.gridSize) >= 20 ? LARGE_BASE_ZONE_SIZE : BASE_ZONE_SIZE;
     nextSetup.centerSize = CENTER_SIZE_OPTIONS.includes(Number(nextSetup.centerSize)) ? Number(nextSetup.centerSize) : DEFAULT_SETUP.centerSize;
+    nextSetup.npcSpawnSettings = normalizeNpcSpawnSettings(nextSetup.npcSpawnSettings);
     nextSetup.alliances = normalizeTeamAlliances(nextSetup);
     const game = makeInitialGame(nextSetup);
     const teams = activeTeams(nextSetup);
@@ -5551,6 +6828,7 @@ export default function QuadrantsOnline() {
       players,
       ready: { build: {}, buy: {} },
       voteEnd: {},
+      resyncVote: {},
       updatedAt: Date.now(),
     });
   }
@@ -5581,6 +6859,22 @@ export default function QuadrantsOnline() {
     });
   }
 
+  async function hostAddCpuPlayer() {
+    if (!lobby || !isHost || lobby.phase !== "lobby") return;
+    const team = openTeamForLobby(lobby);
+    if (!team) return;
+    const now = Date.now();
+    const cpu = makeCpuPlayer(team, now);
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/players/${cpu.id}`]: cpu,
+      [`lobbies/${lobbyCode}/ready/build/${cpu.id}`]: true,
+      [`lobbies/${lobbyCode}/ready/buy/${cpu.id}`]: true,
+      [`lobbies/${lobbyCode}/updatedAt`]: now,
+      [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+      [`lobbies/${lobbyCode}/game/log`]: [`${cpu.name} joined ${TEAM_META[team]?.name || team}.`, ...(game?.log || [])].slice(0, 8),
+    });
+  }
+
   async function hostSetPlayerTeam(targetPlayerId, team) {
     if (!lobby || !isHost || lobby.phase !== "lobby") return;
     const target = lobby.players?.[targetPlayerId];
@@ -5598,20 +6892,43 @@ export default function QuadrantsOnline() {
   }
 
   async function hostKickPlayer(targetPlayerId) {
-    if (!lobby || !isHost || lobby.phase !== "lobby") return;
+    if (!lobby || !isHost) return;
     if (targetPlayerId === playerId) return;
     const target = lobby.players?.[targetPlayerId];
     if (!target) return;
-    if (!confirm(`Remove ${target.name || "this player"} from the lobby? They can rejoin as a fresh player.`)) return;
-    await update(ref(db), {
+    const targetTeam = target.team || null;
+    const active = activeTeams(lobby.setup || lobby.game?.setup || DEFAULT_SETUP);
+    const shouldReplaceWithCpu = lobby.phase !== "lobby" && targetTeam && active.includes(targetTeam) && !isCpuPlayer(target);
+    const actionText = shouldReplaceWithCpu ? "kick this player and replace their team with a CPU?" : "remove this player from the lobby?";
+    if (!confirm(`${target.name || "This player"}: ${actionText}`)) return;
+    const now = Date.now();
+    const patch = {
       [`lobbies/${lobbyCode}/players/${targetPlayerId}`]: null,
       [`lobbies/${lobbyCode}/ready/build/${targetPlayerId}`]: null,
       [`lobbies/${lobbyCode}/ready/buy/${targetPlayerId}`]: null,
       [`lobbies/${lobbyCode}/voteEnd/${targetPlayerId}`]: null,
-      [`lobbies/${lobbyCode}/kicked/${targetPlayerId}`]: null,
-      [`lobbies/${lobbyCode}/game/log`]: [`${target.name || "A player"} was removed from the lobby. They can rejoin as a fresh player.`, ...(game?.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/updatedAt`]: Date.now(),
-    });
+      [`lobbies/${lobbyCode}/resyncVote/votes/${targetPlayerId}`]: null,
+      [`lobbies/${lobbyCode}/kicked/${targetPlayerId}`]: now,
+      [`lobbies/${lobbyCode}/updatedAt`]: now,
+      [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+    };
+    let logText = `${target.name || "A player"} was removed.`;
+    if (shouldReplaceWithCpu) {
+      const cpu = makeCpuPlayer(targetTeam, now);
+      patch[`lobbies/${lobbyCode}/players/${cpu.id}`] = cpu;
+      patch[`lobbies/${lobbyCode}/ready/build/${cpu.id}`] = true;
+      patch[`lobbies/${lobbyCode}/ready/buy/${cpu.id}`] = true;
+      logText = `${target.name || "A player"} was kicked; ${cpu.name} took over ${TEAM_META[targetTeam]?.name || targetTeam}.`;
+      let nextGame = { ...(lobby.game || {}) };
+      if (lobby.phase === "build") nextGame = ensureCpuBuildPaths(nextGame, { ...lobby, players: { ...(lobby.players || {}), [targetPlayerId]: null, [cpu.id]: cpu } });
+      if (lobby.phase === "buy") nextGame = ensureCpuRosters(nextGame, { ...lobby, players: { ...(lobby.players || {}), [targetPlayerId]: null, [cpu.id]: cpu } });
+      if (nextGame.board) patch[`lobbies/${lobbyCode}/game/board`] = nextGame.board;
+      if (nextGame.units) patch[`lobbies/${lobbyCode}/game/units`] = nextGame.units;
+      if (nextGame.gold) patch[`lobbies/${lobbyCode}/game/gold`] = nextGame.gold;
+    }
+    patch[`lobbies/${lobbyCode}/game/log`] = [logText, ...(game?.log || [])].slice(0, 8);
+    await update(ref(db), patch);
+    if (hostKickSelectId === targetPlayerId) setHostKickSelectId("");
   }
 
   async function hostSetHost(targetPlayerId) {
@@ -5650,11 +6967,13 @@ export default function QuadrantsOnline() {
     } else {
       game.log = [`Build Phase started on ${MAP_TEMPLATES[lobby.setup.mapTemplate || "classic"]?.name || "Classic"}.`, "Each player builds their own zone. Connect every base to the neutral center before advancing."];
     }
+    const preparedGame = ensureCpuBuildPaths(game, lobby);
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "build",
-      game,
+      game: preparedGame,
       ready: { build: {}, buy: {} },
       voteEnd: {},
+      resyncVote: {},
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
     });
@@ -5674,11 +6993,14 @@ export default function QuadrantsOnline() {
     if (!lobby || !isHost) return;
     if (!allReadyForPhase(lobby, "build") || !allTeamsConnectedToCenter(lobby.game.board, lobby.game.setup)) return;
     const finalizedBoard = finalizeBuildTerrain(lobby.game.board, lobby.game.setup);
+    const preparedGame = ensureCpuRosters({ ...lobby.game, board: finalizedBoard }, lobby);
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "buy",
       "ready/buy": {},
-      "game/board": finalizedBoard,
-      "game/log": ["Buy Phase started. Empty void tiles were filled with random water, trees, and rocks for free.", "Buy units, name them, choose targets, and finalize.", ...(lobby.game.log || [])].slice(0, 8),
+      "game/board": preparedGame.board,
+      "game/units": preparedGame.units,
+      "game/gold": preparedGame.gold,
+      "game/log": ["Buy Phase started. Empty void tiles were filled with random water, trees, and rocks for free. CPU teams auto-buy a basic roster.", "Buy units, name them, choose targets, and finalize.", ...(lobby.game.log || [])].slice(0, 8),
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
     });
@@ -5687,8 +7009,9 @@ export default function QuadrantsOnline() {
   async function startFight() {
     if (!lobby || !isHost) return;
     if (!allReadyForPhase(lobby, "buy")) return;
-    const teams = activeTeams(lobby.game.setup);
-    const units = arrayFromObject(lobby.game.units).map(normalizeRuntimeUnit).filter((u) => u && STYLE[u.style]);
+    const preparedGame = ensureCpuRosters(lobby.game, lobby);
+    const teams = activeTeams(preparedGame.setup);
+    const units = arrayFromObject(preparedGame.units).map(normalizeRuntimeUnit).filter((u) => u && STYLE[u.style]);
     const overLimitTeam = teams.find((team) => units.filter((u) => u.team === team).length > Number(lobby.game.setup.maxUnits || DEFAULT_SETUP.maxUnits));
     if (overLimitTeam) {
       alert(`${TEAM_META[overLimitTeam]?.name || overLimitTeam} is over the unit cap. Sell units before starting.`);
@@ -5698,13 +7021,25 @@ export default function QuadrantsOnline() {
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "fight",
       "game/board": finalizedBoard,
+      "game/gold": preparedGame.gold,
       "game/fightTime": 0,
+      "game/lastSimTickAt": Date.now(),
+      "game/simTick": 0,
+      "game/respawnQueue": {},
+      "game/unitArchive": {},
+      "game/groundItems": {},
+      "game/killFeed": [],
       "game/splats": {},
       "game/effects": {},
       "game/kothScores": Object.fromEntries(activeTeams(lobby.game.setup).map((team) => [team, 0])),
       "game/kothController": null,
+      "game/nextNpcSpawnAt": npcSpawnConfigs(lobby.game.setup)[0]?.interval ?? NPC_SPAWN_INTERVAL,
+      "game/nextNpcSpawnAtByStyle": initialNpcSpawnSchedule(lobby.game.setup),
+      "game/npcSpawnedTotals": {},
+      "game/npcRespawnTotals": {},
       "game/units": staggerUnitsForFightStart(units),
       voteEnd: {},
+      resyncVote: {},
       "game/log": [`${GAME_MODES[lobby.game.setup.gameMode || "classic"]?.name || "Fight"} started. Host browser simulates combat; host migration continues if host disconnects.`, ...(lobby.game.log || [])].slice(0, 8),
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
@@ -5721,6 +7056,8 @@ export default function QuadrantsOnline() {
       continuedRoster: null,
       carryoverGold: null,
       carryoverLoot: null,
+      voteEnd: {},
+      resyncVote: {},
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
     });
@@ -5731,6 +7068,17 @@ export default function QuadrantsOnline() {
     const allowedTargets = ["blank", "defend", ...((game.setup?.gameMode || "classic") === "king_hill" ? ["hill"] : []), ...targetableBaseTeams(game.bases || {}, game.setup, team)];
     if (!allowedTargets.includes(target)) return;
     await update(ref(db, `lobbies/${lobbyCode}/game/orders/${team}`), { target });
+  }
+
+  async function repairCpuBuildPaths() {
+    if (!lobby || !isHost || lobby.phase !== "build" || !game?.board) return;
+    const repairedGame = ensureCpuBuildPaths(game, lobby);
+    await update(ref(db), {
+      [`lobbies/${lobbyCode}/game/board`]: repairedGame.board,
+      [`lobbies/${lobbyCode}/game/log`]: repairedGame.log || game.log || [],
+      [`lobbies/${lobbyCode}/updatedAt`]: Date.now(),
+      [`lobbies/${lobbyCode}/lastActivityAt`]: Date.now(),
+    });
   }
 
   async function placeTile(row, col) {
@@ -5848,23 +7196,53 @@ export default function QuadrantsOnline() {
   }
 
 
-  async function sellInventoryItem(inventoryIndex) {
+  async function sellInventoryItem(inventoryIndex, quantity = 1) {
     if (!lobby || lobby.phase !== "buy" || !player?.team) return;
     if (readyMap(lobby, "buy")[playerId]) return;
     const inventory = getTeamInventory(game, player.team);
     const picked = inventory[inventoryIndex];
     const item = itemById(picked);
     if (!item) return;
-    const market = makeMarketItem(picked, player.team);
+    const available = itemQuantity(picked);
+    const sellQty = Math.max(1, Math.min(available, Math.round(Number(quantity) || 1)));
+    const market = makeMarketItem(picked, player.team, sellQty);
     if (!market) return;
     const marketKey = firebaseSafeKey(market.marketId);
-    const refund = sellValueForItem(picked);
-    removeOneInventoryEntry(inventory, inventoryIndex);
+    const refund = sellValueForItem(picked) * sellQty;
+    removeInventoryQuantity(inventory, inventoryIndex, sellQty);
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/marketItems/${marketKey}`]: market,
       [`lobbies/${lobbyCode}/game/gold/${player.team}`]: (game.gold?.[player.team] ?? 0) + refund,
-      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} sold ${item.name} to the gear shop for ${refund}g.`, ...(game.log || [])].slice(0, 8),
+      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} sold ${item.name}${sellQty > 1 ? ` x${sellQty}` : ""} to the shop for ${refund}g.`, ...(game.log || [])].slice(0, 8),
+    });
+  }
+
+  function openBuyLootContextMenu(event, inventoryIndex) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!lobby || lobby.phase !== "buy" || !player?.team) return;
+    if (readyMap(lobby, "buy")[playerId]) return;
+    const inventory = getTeamInventory(game, player.team);
+    const picked = inventory[inventoryIndex];
+    const item = itemById(picked);
+    if (!item) return;
+    const qty = itemQuantity(picked);
+    const unitSellValue = sellValueForItem(picked);
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      title: `${item.name}${qty > 1 ? ` x${qty}` : ""}`,
+      items: [
+        { icon: "💰", label: `Sell 1 for ${unitSellValue}g`, action: () => sellInventoryItem(inventoryIndex, 1) },
+        { icon: "🔢", label: "Sell X...", disabled: qty <= 1, action: () => {
+          const raw = window.prompt(`Sell how many ${item.name}?`, String(qty));
+          if (raw == null) return;
+          const amount = Math.max(1, Math.min(qty, Math.round(Number(raw) || 0)));
+          if (amount > 0) sellInventoryItem(inventoryIndex, amount);
+        } },
+        { icon: "🧺", label: `Sell all${qty > 1 ? ` x${qty}` : ""} for ${unitSellValue * qty}g`, action: () => sellInventoryItem(inventoryIndex, qty) },
+      ],
     });
   }
 
@@ -5879,14 +7257,22 @@ export default function QuadrantsOnline() {
     const gold = game.gold?.[player.team] ?? 0;
     const inventory = getTeamInventory(game, player.team);
     if (gold < price) return;
-    const { key: _key, marketId: _marketId, sellerTeam: _sellerTeam, listedAt: _listedAt, price: _price, ...inventoryItem } = listing;
-    if (!addInventoryEntryToArray(inventory, { instanceId: inventoryItem.instanceId || makeRuntimeId("item"), itemId: inventoryItem.itemId || item.id })) return;
+    const shopStock = Math.max(0, Math.round(Number(item.shopStock || 0)));
+    const purchased = Math.max(0, Math.round(Number(game.shopPurchases?.[item.id] || 0)));
+    if (shopBuy && shopStock > 0 && purchased >= shopStock) return;
+    const { key: _key, marketId: _marketId, sellerTeam: _sellerTeam, listedAt: _listedAt, price: _price, qty: _qty, ...inventoryItem } = listing;
+    if (!addInventoryEntryToArray(inventory, { instanceId: makeRuntimeId("item"), itemId: inventoryItem.itemId || item.id, qty: 1 })) return;
     const updates = {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/gold/${player.team}`]: gold - price,
-      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${item.name} from the gear shop for ${price}g.`, ...(game.log || [])].slice(0, 8),
+      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${item.name} from the shop for ${price}g.`, ...(game.log || [])].slice(0, 8),
     };
-    if (!shopBuy) updates[`lobbies/${lobbyCode}/game/marketItems/${marketKey}`] = null;
+    if (shopBuy && shopStock > 0) updates[`lobbies/${lobbyCode}/game/shopPurchases/${item.id}`] = purchased + 1;
+    if (!shopBuy) {
+      const currentQty = itemQuantity(listing);
+      if (currentQty > 1) updates[`lobbies/${lobbyCode}/game/marketItems/${marketKey}/qty`] = currentQty - 1;
+      else updates[`lobbies/${lobbyCode}/game/marketItems/${marketKey}`] = null;
+    }
     await update(ref(db), updates);
   }
 
@@ -6179,7 +7565,7 @@ export default function QuadrantsOnline() {
     const unit = activeUnit || queuedUnit;
     if (!unit || unit.team !== player?.team) return;
     const basePath = activeUnit ? `lobbies/${lobbyCode}/game/units/${unitId}` : `lobbies/${lobbyCode}/game/respawnQueue/${unitId}`;
-    const allowed = new Set(["name", "priority", "targetOverride", "manualTargetType", "manualTargetUnitId", "manualTargetRow", "manualTargetCol", "manualResourceType", "manualGroundItemId", "manualTargetStartedAt", "manualTargetBlockedSince", "homeTeleportStartedAt", "homeTeleportHpAtStart", "homeTeleportLastAttackedAtStart", "homeTeleportPreviousTargetOverride", "homeTeleportPreviousManualTargetType", "homeTeleportPreviousManualTargetUnitId", "homeTeleportPreviousManualTargetRow", "homeTeleportPreviousManualTargetCol", "homeTeleportPreviousManualResourceType", "homeTeleportPreviousManualGroundItemId"]);
+    const allowed = new Set(["name", "priority", "targetOverride", "manualTargetType", "manualTargetUnitId", "manualTargetRow", "manualTargetCol", "manualResourceType", "manualGroundItemId", "manualTargetStartedAt", "manualTargetBlockedSince", "homeTeleportStartedAt", "homeTeleportHpAtStart", "homeTeleportLastAttackedAtStart", "homeTeleportPreviousTargetOverride", "homeTeleportPreviousManualTargetType", "homeTeleportPreviousManualTargetUnitId", "homeTeleportPreviousManualTargetRow", "homeTeleportPreviousManualTargetCol", "homeTeleportPreviousManualResourceType", "homeTeleportPreviousManualGroundItemId", "activePrayers", "prayerPoints"]);
     const updates = {};
     for (const [k, v] of Object.entries(patch)) {
       if (allowed.has(k)) updates[`${basePath}/${k}`] = v;
@@ -6284,6 +7670,25 @@ export default function QuadrantsOnline() {
     await update(ref(db, `lobbies/${lobbyCode}/voteEnd`), { [playerId]: Boolean(value) });
   }
 
+  async function toggleVoteResync(value) {
+    if (!lobby || lobby.phase !== "fight") return;
+    const now = Date.now();
+    const existingRequestedAt = Number(lobby.resyncVote?.requestedAt || 0);
+    const keepExistingVoteWindow = existingRequestedAt && now - existingRequestedAt <= RESYNC_VOTE_WINDOW_MS;
+    const patch = {
+      [`lobbies/${lobbyCode}/updatedAt`]: now,
+      [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+    };
+    if (value) {
+      patch[`lobbies/${lobbyCode}/resyncVote/requestedAt`] = keepExistingVoteWindow ? existingRequestedAt : now;
+      patch[`lobbies/${lobbyCode}/resyncVote/requestedBy`] = keepExistingVoteWindow ? (lobby.resyncVote?.requestedBy || playerId) : playerId;
+      patch[`lobbies/${lobbyCode}/resyncVote/votes/${playerId}`] = true;
+    } else {
+      patch[`lobbies/${lobbyCode}/resyncVote/votes/${playerId}`] = null;
+    }
+    await update(ref(db), patch);
+  }
+
   async function continueRosterToLobby() {
     if (!lobby || !isHost || lobby.phase !== "results") return;
     const previous = lobby.game;
@@ -6319,6 +7724,7 @@ export default function QuadrantsOnline() {
       carryoverLoot: previous.loot || makeLoot(lobby.setup),
       ready: { build: {}, buy: {} },
       voteEnd: {},
+      resyncVote: {},
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
     });
@@ -6334,8 +7740,12 @@ export default function QuadrantsOnline() {
     }
   }
 
+  if (toolView === "content") {
+    return <ContentManager onBack={closeContentManager} />;
+  }
+
   if (!lobbyCode || !lobby) {
-    return <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} onCleanupLobbies={runLobbyCleanup} status={status} cleanupStatus={cleanupStatus} />;
+    return <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} onCleanupLobbies={runLobbyCleanup} onOpenContentManager={openContentManager} status={status} cleanupStatus={cleanupStatus} />;
   }
 
 
@@ -6356,6 +7766,10 @@ export default function QuadrantsOnline() {
   const hostPlayer = lobby.players?.[lobby.hostId];
   const bodyClass = `app phase-${phase}`;
   const myVoteEnd = Boolean(lobby.voteEnd?.[playerId]);
+  const resyncSummaryNow = resyncVoteSummary(lobby, clockNow);
+  const myVoteResync = Boolean(lobby.resyncVote?.votes?.[playerId]);
+  const fightSimAge = simTickAgeMs(lobby, clockNow);
+  const fightLooksFrozen = isFightSimStale(lobby, clockNow);
   const fightClock = game && phase === "fight" ? `${formatDuration(game.fightTime || 0)} / ${formatDuration(game.setup?.matchTimeLimit || DEFAULT_SETUP.matchTimeLimit)}` : null;
   const phaseTeams = game ? activeTeams(game.setup) : [];
   const buildCanAdvance = game ? allReadyForPhase(lobby, "build") && phaseTeams.every((team) => teamConnectedToCenter(game.board, team, game.setup)) : false;
@@ -6374,7 +7788,13 @@ export default function QuadrantsOnline() {
           {phase === "fight" && (
             <div className="vote-end-box">
               <label className="toggle-check vote-toggle"><input type="checkbox" checked={myVoteEnd} onChange={(e) => toggleVoteEnd(e.target.checked)} /> Vote end</label>
-              <span className="vote-mini">{activeGamePlayers(lobby).map((p) => `${p.name}:${lobby.voteEnd?.[p.id] ? "yes" : "no"}`).join(" • ")}</span>
+              <span className="vote-mini">{activeGamePlayers(lobby).map((p) => `${p.name}:${isCpuPlayer(p) ? "cpu" : lobby.voteEnd?.[p.id] ? "yes" : "no"}`).join(" • ")}</span>
+            </div>
+          )}
+          {phase === "fight" && (
+            <div className={`vote-end-box resync-vote-box ${fightLooksFrozen ? "is-stale" : ""}`}>
+              <label className="toggle-check vote-toggle"><input type="checkbox" checked={myVoteResync} onChange={(e) => toggleVoteResync(e.target.checked)} /> Vote resync</label>
+              <span className="vote-mini">{resyncSummaryNow.yes}/{resyncSummaryNow.needed || "?"}{fightLooksFrozen ? ` • stale ${Math.floor(fightSimAge / 1000)}s` : ""}</span>
             </div>
           )}
           <label className="toggle-check"><input type="checkbox" checked={visualToggles.showHitsplats} onChange={(e) => setVisualToggles((v) => ({ ...v, showHitsplats: e.target.checked }))} /> Hitsplats</label>
@@ -6382,6 +7802,15 @@ export default function QuadrantsOnline() {
           <Pill tone={player.connected ? "ready" : "waiting"}>{player.name}</Pill>
           <Pill>{player.team ? teamDisplayLabel(lobby, player.team) : "Spectator"}</Pill>
           {isHost && <Pill tone="host">You are host</Pill>}
+          {isHost && phase !== "lobby" && (
+            <div className="host-kick-inline">
+              <select value={hostKickSelectId} onChange={(e) => setHostKickSelectId(e.target.value)} title="Kick or replace an AFK player">
+                <option value="">Kick player…</option>
+                {currentPlayers(lobby).filter((p) => p.id !== playerId).map((p) => <option key={p.id} value={p.id}>{p.name}{isCpuPlayer(p) ? " (CPU)" : ""}</option>)}
+              </select>
+              <Button onClick={() => hostKickSelectId && hostKickPlayer(hostKickSelectId)} disabled={!hostKickSelectId}>Kick</Button>
+            </div>
+          )}
           <Button onClick={leaveLobby}>Leave</Button>
           {isHost && <Button onClick={deleteLobby}>Delete Lobby</Button>}
         </div>
@@ -6389,7 +7818,7 @@ export default function QuadrantsOnline() {
 
       {phase === "lobby" && (
         <main className="main-shell">
-          <LobbyView lobby={lobby} playerId={playerId} isHost={isHost} onUpdateSetup={updateSetup} onStartBuild={startBuild} onChooseTeam={chooseTeam} onChooseAlliance={chooseAlliance} onLeave={leaveLobby} onHostSetPlayerTeam={hostSetPlayerTeam} onHostKickPlayer={hostKickPlayer} onHostSetHost={hostSetHost} />
+          <LobbyView lobby={lobby} playerId={playerId} isHost={isHost} onUpdateSetup={updateSetup} onStartBuild={startBuild} onChooseTeam={chooseTeam} onChooseAlliance={chooseAlliance} onLeave={leaveLobby} onHostSetPlayerTeam={hostSetPlayerTeam} onHostKickPlayer={hostKickPlayer} onHostSetHost={hostSetHost} onHostAddCpu={hostAddCpuPlayer} />
         </main>
       )}
 
@@ -6398,7 +7827,7 @@ export default function QuadrantsOnline() {
           <section className="board-card">
             <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={placeTile} selectedUnitId={selectedUnitId} visualToggles={visualToggles} />
           </section>
-          <BuildPanel lobby={lobby} player={player} selectedTool={selectedTool} setSelectedTool={setSelectedTool} onReady={(v) => setReady("build", v)} isHost={isHost} onAdvance={advanceToBuy} onSetOrder={setOrder} />
+          <BuildPanel lobby={lobby} player={player} selectedTool={selectedTool} setSelectedTool={setSelectedTool} onReady={(v) => setReady("build", v)} isHost={isHost} onAdvance={advanceToBuy} onSetOrder={setOrder} onRepairCpuPaths={repairCpuBuildPaths} />
         </main>
       )}
 
@@ -6406,16 +7835,21 @@ export default function QuadrantsOnline() {
         <main className="buy-shell">
           <section className="board-card buy-board-card">
             <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={() => {}} selectedUnitId={selectedUnitId} visualToggles={visualToggles} />
-            <BuyPanel lobby={lobby} player={player} onBuy={buyUnit} onBuyMarketItem={buyMarketItem} onSellInventoryItem={sellInventoryItem} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} onUpdateUnit={updateUnitConfig} onRemoveUnit={removeBuyUnit} onReady={(v) => setReady("buy", v)} isHost={isHost} onAdvance={startFight} />
+            <BuyPanel lobby={lobby} player={player} onBuy={buyUnit} onBuyMarketItem={buyMarketItem} onSellInventoryItem={sellInventoryItem} onOpenLootContextMenu={openBuyLootContextMenu} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} onUpdateUnit={updateUnitConfig} onRemoveUnit={removeBuyUnit} onReady={(v) => setReady("buy", v)} isHost={isHost} onAdvance={startFight} />
           </section>
         </main>
       )}
 
       {phase === "fight" && (
         <main className="fight-shell">
-          <FightLeftPanel lobby={lobby} player={player} selectedUnitId={selectedUnitId} setSelectedUnitId={setSelectedUnitId} selectedResource={selectedResource} setSelectedResource={setSelectedResource} onUpdateUnit={updateFightUnitConfig} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); setPendingManualTargetUnitId(unitId); }} onEquipItem={equipInventoryItem} />
+          <FightLeftPanel lobby={lobby} player={player} selectedUnitId={selectedUnitId} setSelectedUnitId={setSelectedUnitId} selectedResource={selectedResource} setSelectedResource={setSelectedResource} onUpdateUnit={updateFightUnitConfig} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); setPendingManualTargetUnitId(unitId); }} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} />
           <section className={`board-card ${pendingManualTargetUnitId ? "manual-target-active" : ""}`}>
             {pendingManualTargetUnitId && <div className="manual-target-banner">Select target for {game?.units?.[pendingManualTargetUnitId]?.name || "unit"}: click an enemy unit to attack, a road/base tile to move, or a matching tree/rock to chop/mine.</div>}
+            {fightLooksFrozen && (
+              <div className="resync-warning-banner">
+                Fight simulation has not updated for {Math.floor(fightSimAge / 1000)}s. Vote to resync or wait for host migration. Votes: {resyncSummaryNow.yes}/{resyncSummaryNow.needed || "?"}
+              </div>
+            )}
             <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={handleFightCellClick} onUnitClick={handleFightUnitClick} selectedUnitId={selectedUnitId} selectedResource={selectedResource} visualToggles={visualToggles} onGroundItemsContextMenu={openGroundItemsContextMenu} onBoardContextMenu={openBoardContextMenu} />
             {showStats && <FightStats lobby={lobby} player={player} />}
           </section>

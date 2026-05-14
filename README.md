@@ -138,3 +138,73 @@ Push to `main`. The included GitHub Actions workflow builds and deploys to GitHu
 - Added new player colors: Orange, Yellow, Pink, and Cyan.
 - Added board pan/zoom controls: scroll wheel zooms, middle mouse drag pans, and Reset restores the default view.
 - Source zip intentionally omits package-lock.json so local installs use your normal npm registry.
+
+## Content Manager
+
+This build includes a local content manager for preparing item and NPC definitions without storing bulky data in Firebase.
+
+Open it from the home screen with **Content Manager**, or go directly to:
+
+```text
+/#content-manager
+```
+
+The manager can edit:
+
+- item IDs, names, values, stackability, slots, bonuses, consumable keys, and image paths
+- NPC IDs, names, image paths, size, stats, base damage, attack speed, attack range, spawn amount/rate, and loot tables
+- loot table chances and quantity ranges
+
+Exports are static JS/JSON files. Keep images in `public/assets` and use short IDs like `itemId` and `npcId` in Firebase match data.
+
+## v3.32 default content pack
+
+- Updated the default Content Manager seed from `quadrants-content (2).json`.
+- Added bundled assets for new gear and NPCs.
+- Added dynamic NPC spawn controls for every NPC in the content pack.
+- Added large NPC rendering support beyond 2x2, including 3x3 NPCs.
+
+## v3.44 local tweaks
+
+- NPC pending spawn markers now respect the per-match spawn cap, so the pentagram warning does not appear when a capped NPC can no longer spawn.
+- Content Manager now requires the password `1234qwer` before opening in the browser session.
+- Buy Phase unit stat grids are compacted into 2-3 columns depending on viewport width.
+- Buy Phase **Gear** tab is renamed to **Shop**.
+- Shop items are collapsible. The compact row shows name, type, price, slot, and stock; expanding shows stats/notes and the buy button.
+- Fight sync now skips unchanged game subtrees in regular tick updates instead of rewriting every child every tick.
+
+## v3.46 NPC tracker and cap hardening
+
+- Fight Phase now shows an **NPC Tracker** in the left panel when NPC spawns are enabled.
+- The tracker shows alive count, total NPC bodies spawned during the match, and successful respawn triggers used versus the configured max.
+- Starting a fight now explicitly resets `npcSpawnedTotals`, `npcRespawnTotals`, and the per-style spawn schedule so stale counters from earlier fights/lobbies cannot leak into the next fight.
+- The host simulation loop now prevents overlapping async ticks from running at the same time, which reduces the chance of duplicate spawn processing when Firebase reads/writes are slow.
+- Respawn caps are also inferred defensively from total spawned NPC bodies if an older lobby is missing `npcRespawnTotals`.
+
+## v3.45 NPC respawn semantics
+
+- NPC lobby/content wording now uses **Amount per spawn**, **Allowed on map at a time**, **Seconds until respawn**, and **Number of respawns per match**.
+- `Amount per spawn` controls how many NPC bodies a successful timer trigger can create.
+- `Allowed on map at a time` caps living NPCs of that type; `0` means unlimited.
+- `Number of respawns per match` caps successful spawn timer triggers; `0` means unlimited. A value of `1` now allows only one successful spawn trigger for that NPC type.
+- Spawn warning icons use the same respawn-trigger and on-map-cap rules, so warnings should not appear when the next trigger cannot spawn anything.
+
+## Firebase bandwidth notes
+
+Firebase Realtime Database bandwidth pressure mainly comes from fight-phase state sync. The current architecture uses a host-authoritative browser simulation and connected clients subscribe to the live lobby/game state. The largest payloads are `game.units`, `game.board`, cosmetic `game.splats` / `game.effects`, and inventories/loot when they change.
+
+Optimizations already in this build:
+
+- Board state is only written during the fight when resource/NPC terrain changes mark it dirty.
+- Regular fight ticks now patch only fields whose serialized value changed.
+- Static content remains bundled in source/assets instead of being stored in Firebase per match; Firebase stores short item/unit/NPC IDs.
+- Presence is heartbeat-throttled rather than written on every lobby snapshot.
+
+Future optimizations to consider before larger public playtests:
+
+- Move fight listeners away from the full lobby root and subscribe separately to small lobby metadata plus the exact game subtrees each screen needs.
+- Split cosmetic effects from authoritative combat state, or make hitsplats/projectiles client-derived where possible.
+- Delta-sync units by unit ID instead of writing the full `game.units` object every tick.
+- Consider a lower-frequency remote sync with client-side interpolation for movement/projectiles.
+- Keep logs, kill feed, market history, and result snapshots capped aggressively.
+- Add a lightweight bandwidth/debug panel that estimates serialized bytes written per tick during local tests.

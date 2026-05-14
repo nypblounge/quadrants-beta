@@ -1,6 +1,6 @@
 {
   "name": "quadrants-beta",
-  "version": "0.3.27-online-v3.27",
+  "version": "0.3.47-online-v3.47",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,10 +10,9 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "firebase": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "firebase": "latest"
-  },
-  "devDependencies": {}
+    "vite": "latest"
+  }
 }
