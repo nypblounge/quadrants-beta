@@ -4,12 +4,12 @@ import { initializeApp } from "firebase/app";
 import {
   getDatabase,
   ref,
-  set,
-  update,
-  onValue,
+  set as firebaseSet,
+  update as firebaseUpdate,
+  onValue as firebaseOnValue,
   onDisconnect,
-  get,
-  remove,
+  get as firebaseGet,
+  remove as firebaseRemove,
   serverTimestamp,
   query,
   orderByChild,
@@ -25,16 +25,186 @@ const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
 
+
+const NETWORK_DEBUG_STORAGE_KEY = "quadrants_network_debug_enabled_v1";
+const NETWORK_DEBUG_MAX_ENTRIES = 120;
+const NETWORK_DEBUG_EVENT = "quadrants-network-debug-updated";
+
+function sanitizeFirebaseValue(value) {
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return value.map((item) => sanitizeFirebaseValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeFirebaseValue(item)]));
+  }
+  return value;
+}
+
+function jsonByteLength(value) {
+  const safeValue = sanitizeFirebaseValue(value);
+  try {
+    return new TextEncoder().encode(JSON.stringify(safeValue ?? null)).length;
+  } catch {
+    try {
+      return JSON.stringify(safeValue ?? null).length;
+    } catch {
+      return 0;
+    }
+  }
+}
+
+function cleanFirebasePath(value) {
+  const text = String(value || "");
+  const marker = "/quadrants-beta-default-rtdb/";
+  if (text.includes(marker)) return text.split(marker).pop();
+  const parts = text.split("/").filter(Boolean);
+  const index = parts.findIndex((part) => part.includes("firebaseio.com") || part.includes("firebasedatabase.app"));
+  if (index >= 0) return parts.slice(index + 1).join("/") || "/";
+  return text.replace(/^https?:\/\/[^/]+\/?/, "") || "/";
+}
+
+function networkDebugState() {
+  if (typeof window === "undefined") return null;
+  if (!window.__quadrantsNetworkDebug) {
+    window.__quadrantsNetworkDebug = {
+      enabled: window.localStorage?.getItem(NETWORK_DEBUG_STORAGE_KEY) !== "off",
+      startedAt: Date.now(),
+      entries: [],
+      totals: { writeBytes: 0, readBytes: 0, writes: 0, reads: 0, listeners: 0, activeListeners: 0, gets: 0 },
+      byPath: {},
+      listenerSeq: 0,
+    };
+  }
+  return window.__quadrantsNetworkDebug;
+}
+
+function notifyNetworkDebugChanged() {
+  if (typeof window === "undefined") return;
+  if (window.__quadrantsNetworkDebugNotifyQueued) return;
+  window.__quadrantsNetworkDebugNotifyQueued = true;
+  window.setTimeout(() => {
+    window.__quadrantsNetworkDebugNotifyQueued = false;
+    window.dispatchEvent(new CustomEvent(NETWORK_DEBUG_EVENT));
+  }, 250);
+}
+
+function recordNetworkMetric(kind, targetRef, payload, extra = {}) {
+  const state = networkDebugState();
+  if (!state || !state.enabled) return;
+  const path = cleanFirebasePath(targetRef?.toString?.() || targetRef || "/");
+  const bytes = jsonByteLength(payload);
+  const now = Date.now();
+  const direction = kind === "set" || kind === "update" || kind === "remove" ? "write" : "read";
+  const entry = { id: `${now}_${Math.random().toString(36).slice(2, 7)}`, at: now, kind, path, bytes, ...extra };
+  state.entries.unshift(entry);
+  state.entries = state.entries.slice(0, NETWORK_DEBUG_MAX_ENTRIES);
+  if (direction === "write") {
+    state.totals.writes += 1;
+    state.totals.writeBytes += bytes;
+  } else {
+    state.totals.reads += 1;
+    state.totals.readBytes += bytes;
+    if (kind === "get") state.totals.gets += 1;
+  }
+  if (kind === "listener") state.totals.listeners += 1;
+  if (!state.byPath[path]) state.byPath[path] = { path, writeBytes: 0, readBytes: 0, writes: 0, reads: 0, lastKind: kind, lastAt: now };
+  const row = state.byPath[path];
+  if (direction === "write") {
+    row.writes += 1;
+    row.writeBytes += bytes;
+  } else {
+    row.reads += 1;
+    row.readBytes += bytes;
+  }
+  row.lastKind = kind;
+  row.lastAt = now;
+  notifyNetworkDebugChanged();
+}
+
+function set(targetRef, value) {
+  const safeValue = sanitizeFirebaseValue(value);
+  recordNetworkMetric("set", targetRef, safeValue);
+  return firebaseSet(targetRef, safeValue);
+}
+
+function update(targetRef, value) {
+  const safeValue = sanitizeFirebaseValue(value);
+  recordNetworkMetric("update", targetRef, safeValue);
+  return firebaseUpdate(targetRef, safeValue);
+}
+
+function remove(targetRef) {
+  recordNetworkMetric("remove", targetRef, null);
+  return firebaseRemove(targetRef);
+}
+
+function get(targetRef) {
+  return firebaseGet(targetRef).then((snap) => {
+    recordNetworkMetric("get", targetRef, snap.val());
+    return snap;
+  });
+}
+
+function onValue(targetRef, callback, cancelCallbackOrListenOptions, options) {
+  const state = networkDebugState();
+  let listenerId = null;
+  if (state?.enabled) {
+    listenerId = ++state.listenerSeq;
+    state.totals.activeListeners += 1;
+    recordNetworkMetric("listener", targetRef, { active: state.totals.activeListeners }, { listenerId });
+  }
+  const wrappedCallback = (snap) => {
+    recordNetworkMetric("onValue", targetRef, snap.val(), { listenerId });
+    callback(snap);
+  };
+  const unsubscribe = firebaseOnValue(targetRef, wrappedCallback, cancelCallbackOrListenOptions, options);
+  return () => {
+    const current = networkDebugState();
+    if (current?.enabled) {
+      current.totals.activeListeners = Math.max(0, current.totals.activeListeners - 1);
+      notifyNetworkDebugChanged();
+    }
+    unsubscribe();
+  };
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${Math.round(n)} B`;
+}
+
+function estimateMonthlyFromRate(bytes, elapsedMs) {
+  if (!elapsedMs || elapsedMs < 1000) return 0;
+  return bytes * (30 * 24 * 60 * 60 * 1000 / elapsedMs);
+}
+
 const CONTENT_MANAGER_STORAGE_KEY = "quadrants_content_manager_draft_v2";
+const LOCAL_CONTENT_PREVIEW_PARAM = "contentPreview";
 
 function cleanContentId(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
+function localContentPreviewEnabled() {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return false;
+    // Content Manager drafts are intentionally ignored in production so a player
+    // cannot change their own local item prices/shop flags and gain an advantage.
+    // Developers can still preview a draft locally with: npm run dev -- ?contentPreview=1
+    if (!import.meta.env.DEV) return false;
+    return new URLSearchParams(window.location.search).get(LOCAL_CONTENT_PREVIEW_PARAM) === "1";
+  } catch {
+    return false;
+  }
+}
+
+const LOCAL_CONTENT_PREVIEW_ENABLED = localContentPreviewEnabled();
+
 function loadGameContentPack() {
   const fallback = makeDefaultContent();
+  if (!LOCAL_CONTENT_PREVIEW_ENABLED) return fallback;
   try {
-    if (typeof window === "undefined" || !window.localStorage) return fallback;
     const raw = window.localStorage.getItem(CONTENT_MANAGER_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
@@ -1830,10 +2000,15 @@ function makeCpuRosterForTeam(team, setup, existingUnits = []) {
 function ensureCpuRosters(gameInput, lobbyLike) {
   if (!gameInput) return gameInput;
   const setup = gameInput.setup || lobbyLike?.setup || DEFAULT_SETUP;
-  const teams = cpuTeamsInLobby({ ...lobbyLike, setup, game: gameInput });
-  if (!teams.length) return gameInput;
-  const units = arrayFromObject(gameInput.units);
-  const gold = { ...(gameInput.gold || makeGold(setup)) };
+  const baseGame = {
+    ...gameInput,
+    units: gameInput.units || {},
+    gold: gameInput.gold || makeGold(setup),
+  };
+  const teams = cpuTeamsInLobby({ ...lobbyLike, setup, game: baseGame });
+  if (!teams.length) return baseGame;
+  const units = arrayFromObject(baseGame.units);
+  const gold = { ...(baseGame.gold || makeGold(setup)) };
   let changed = false;
   for (const team of teams) {
     const existing = units.filter((u) => u.team === team);
@@ -1844,7 +2019,7 @@ function ensureCpuRosters(gameInput, lobbyLike) {
     gold[team] = Math.max(0, Number(gold[team] ?? setup.startingGold ?? DEFAULT_SETUP.startingGold) - spent);
     changed = changed || roster.length > 0;
   }
-  return changed ? { ...gameInput, units: objectFromArray(units), gold } : gameInput;
+  return changed ? { ...baseGame, units: objectFromArray(units), gold } : baseGame;
 }
 
 function makeInitialGame(setup = DEFAULT_SETUP) {
@@ -3919,6 +4094,110 @@ function Pill({ children, tone = "default" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
 }
 
+function networkDebugSnapshot() {
+  const state = networkDebugState();
+  if (!state) return null;
+  const elapsedMs = Math.max(1, Date.now() - state.startedAt);
+  const pathRows = Object.values(state.byPath || {})
+    .sort((a, b) => ((b.writeBytes + b.readBytes) - (a.writeBytes + a.readBytes)))
+    .slice(0, 8);
+  return {
+    enabled: state.enabled,
+    startedAt: state.startedAt,
+    elapsedMs,
+    totals: { ...state.totals },
+    recent: [...state.entries].slice(0, 10),
+    pathRows,
+    estimatedMonthlyReadBytes: estimateMonthlyFromRate(state.totals.readBytes, elapsedMs),
+    estimatedMonthlyWriteBytes: estimateMonthlyFromRate(state.totals.writeBytes, elapsedMs),
+  };
+}
+
+function NetworkDebugPanel({ compact = false }) {
+  const [open, setOpen] = useState(() => window.localStorage?.getItem("quadrants_network_debug_panel_open_v1") === "yes");
+  const [snapshot, setSnapshot] = useState(() => networkDebugSnapshot());
+  useEffect(() => {
+    const refresh = () => setSnapshot(networkDebugSnapshot());
+    window.addEventListener(NETWORK_DEBUG_EVENT, refresh);
+    const id = window.setInterval(refresh, 1000);
+    return () => {
+      window.removeEventListener(NETWORK_DEBUG_EVENT, refresh);
+      window.clearInterval(id);
+    };
+  }, []);
+  if (!snapshot) return null;
+  const setEnabled = (enabled) => {
+    const state = networkDebugState();
+    if (!state) return;
+    state.enabled = enabled;
+    window.localStorage?.setItem(NETWORK_DEBUG_STORAGE_KEY, enabled ? "on" : "off");
+    setSnapshot(networkDebugSnapshot());
+  };
+  const reset = () => {
+    const state = networkDebugState();
+    if (!state) return;
+    state.startedAt = Date.now();
+    state.entries = [];
+    state.totals = { writeBytes: 0, readBytes: 0, writes: 0, reads: 0, listeners: 0, activeListeners: state.totals.activeListeners || 0, gets: 0 };
+    state.byPath = {};
+    setSnapshot(networkDebugSnapshot());
+  };
+  const toggleOpen = () => {
+    const next = !open;
+    setOpen(next);
+    window.localStorage?.setItem("quadrants_network_debug_panel_open_v1", next ? "yes" : "no");
+  };
+  return (
+    <div className={`network-debug ${open ? "is-open" : ""} ${compact ? "is-compact" : ""}`}>
+      <button className="network-debug-tab" type="button" onClick={toggleOpen} title="Show Firebase bandwidth estimates">
+        Net {formatBytes(snapshot.totals.readBytes)}↓ {formatBytes(snapshot.totals.writeBytes)}↑
+      </button>
+      {open && (
+        <div className="network-debug-panel">
+          <div className="network-debug-header">
+            <div>
+              <b>Firebase Network Debug</b>
+              <p>Local estimate only. Firebase billing includes protocol overhead, but this exposes high-cost paths.</p>
+            </div>
+            <button type="button" onClick={toggleOpen}>×</button>
+          </div>
+          <div className="network-debug-actions">
+            <label className="toggle-check"><input type="checkbox" checked={snapshot.enabled} onChange={(e) => setEnabled(e.target.checked)} /> Track</label>
+            <button type="button" onClick={reset}>Reset</button>
+          </div>
+          <div className="network-debug-grid">
+            <span>Reads/downloaded</span><b>{formatBytes(snapshot.totals.readBytes)}</b>
+            <span>Writes/uploaded</span><b>{formatBytes(snapshot.totals.writeBytes)}</b>
+            <span>Read events</span><b>{snapshot.totals.reads}</b>
+            <span>Write events</span><b>{snapshot.totals.writes}</b>
+            <span>Active listeners</span><b>{snapshot.totals.activeListeners}</b>
+            <span>Monthly read pace</span><b>{formatBytes(snapshot.estimatedMonthlyReadBytes)}</b>
+          </div>
+          <h4>Largest paths</h4>
+          <div className="network-debug-paths">
+            {snapshot.pathRows.length === 0 && <p className="muted">No network activity recorded yet.</p>}
+            {snapshot.pathRows.map((row) => (
+              <div className="network-debug-row" key={row.path}>
+                <code>{row.path || "/"}</code>
+                <span>{formatBytes(row.readBytes)}↓ / {formatBytes(row.writeBytes)}↑</span>
+              </div>
+            ))}
+          </div>
+          <h4>Recent events</h4>
+          <div className="network-debug-events">
+            {snapshot.recent.map((entry) => (
+              <div className="network-debug-row" key={entry.id}>
+                <code>{entry.kind} {entry.path || "/"}</code>
+                <span>{formatBytes(entry.bytes)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GameContextMenu({ menu, onClose }) {
   useEffect(() => {
     if (!menu) return undefined;
@@ -4659,6 +4938,7 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCl
         {status && <div className="status-line">{status}</div>}
         {cleanupStatus && <div className="cleanup-status-line">{cleanupStatus}</div>}
       </div>
+      <NetworkDebugPanel compact />
     </div>
   );
 }
@@ -6437,6 +6717,11 @@ export default function QuadrantsOnline() {
   const [toolView, setToolView] = useState(() => (window.location.hash === "#content-manager" ? "content" : "game"));
   const [hostKickSelectId, setHostKickSelectId] = useState("");
   const fightTickInFlightRef = useRef(false);
+  const latestLobbyRef = useRef(null);
+
+  useEffect(() => {
+    latestLobbyRef.current = lobby;
+  }, [lobby]);
 
 
   useEffect(() => {
@@ -6482,18 +6767,62 @@ export default function QuadrantsOnline() {
       setLobby(null);
       return;
     }
-    const lobbyRef = ref(db, `lobbies/${lobbyCode}`);
-    const unsub = onValue(lobbyRef, (snap) => {
-      const value = snap.val();
-      if (!value) {
+
+    // Bandwidth optimization: do not subscribe to the entire lobby object.
+    // During fights, the old root listener re-downloaded players, setup, ready flags,
+    // metadata, and the full game payload whenever any child changed. Splitting the
+    // listener by top-level child keeps each screen compatible with the existing
+    // lobby object shape while limiting fight tick downloads mostly to /game.
+    const lobbySegmentKeys = [
+      "phase",
+      "hostId",
+      "createdAt",
+      "updatedAt",
+      "lastActivityAt",
+      "cleanupAfterHours",
+      "setup",
+      "game",
+      "ready",
+      "players",
+      "kicked",
+      "voteEnd",
+      "resyncVote",
+      "continuedRoster",
+      "carryoverGold",
+      "carryoverLoot",
+    ];
+    const fragments = { code: lobbyCode };
+    const loaded = new Set();
+    let disposed = false;
+
+    const publishLobby = () => {
+      if (disposed) return;
+      const coreLoaded = loaded.has("phase") && loaded.has("players") && loaded.has("game");
+      const hasAnyData = lobbySegmentKeys.some((key) => fragments[key] !== undefined && fragments[key] !== null);
+      if (coreLoaded && !hasAnyData) {
         setLobby(null);
         setStatus("Lobby was not found or was deleted.");
         return;
       }
-      setLobby(value);
-      setStatus("");
-    });
-    return () => unsub();
+      const nextLobby = { code: lobbyCode };
+      for (const key of lobbySegmentKeys) {
+        if (fragments[key] !== undefined && fragments[key] !== null) nextLobby[key] = fragments[key];
+      }
+      latestLobbyRef.current = nextLobby;
+      setLobby(nextLobby);
+      if (hasAnyData) setStatus("");
+    };
+
+    const unsubs = lobbySegmentKeys.map((key) => onValue(ref(db, `lobbies/${lobbyCode}/${key}`), (snap) => {
+      loaded.add(key);
+      fragments[key] = snap.val();
+      publishLobby();
+    }));
+
+    return () => {
+      disposed = true;
+      unsubs.forEach((unsub) => unsub());
+    };
   }, [lobbyCode]);
 
   const playerExistsInLobby = Boolean(lobby?.players?.[playerId]);
@@ -6558,8 +6887,11 @@ export default function QuadrantsOnline() {
       if (fightTickInFlightRef.current) return;
       fightTickInFlightRef.current = true;
       try {
-        const snap = await get(ref(db, `lobbies/${lobbyCode}`));
-        const latest = snap.val();
+        // Bandwidth optimization: the host already has the latest lobby data from
+        // the split top-level listeners above. Avoid a full /lobbies/{code} get on
+        // every fight tick; that was re-downloading the entire lobby snapshot and
+        // showed up as one of the largest Firebase paths in the Net panel.
+        const latest = latestLobbyRef.current;
         if (!latest || latest.phase !== "fight" || latest.hostId !== playerId) return;
         const now = Date.now();
       if (resyncVotePassed(latest, now)) {
@@ -6588,7 +6920,14 @@ export default function QuadrantsOnline() {
         });
         return;
       }
-      const nextGame = stepGame(latest.game, TICK_SECONDS);
+      // Run simulation on a cloned game object. stepGame intentionally mutates
+      // some nested structures while simulating. If we pass latest.game directly,
+      // the diff code below can miss changes because previousGame was mutated too.
+      // That caused synced fields such as NPC loot inventories and NPC spawn
+      // counters to sometimes not be written to Firebase.
+      const previousGameSnapshot = latest.game || {};
+      const simulationGame = JSON.parse(JSON.stringify(previousGameSnapshot || {}));
+      const nextGame = stepGame(simulationGame, TICK_SECONDS);
       if (nextGame.finished) {
         const results = nextGame.results || summarizeResults(nextGame, "last combat presence");
         await update(ref(db, `lobbies/${lobbyCode}`), {
@@ -6615,11 +6954,11 @@ export default function QuadrantsOnline() {
           "game/groundItems": nextGame.groundItems,
           "game/fightTime": nextGame.fightTime,
           "game/lastSimTickAt": now,
-          "game/simTick": Number(latest.game?.simTick || 0) + 1,
+          "game/simTick": Number(previousGameSnapshot?.simTick || 0) + 1,
           "game/log": [`Fight ended: ${results.winner || "Draw"}.`, ...(nextGame.log || [])].slice(0, 8),
         });
       } else {
-        const previousGame = latest.game || {};
+        const previousGame = previousGameSnapshot;
         const gamePatch = {
           fightTime: nextGame.fightTime,
           lastSimTickAt: now,
@@ -7862,6 +8201,7 @@ export default function QuadrantsOnline() {
           <ResultsView lobby={lobby} resetToLobby={resetToLobby} continueRosterToLobby={continueRosterToLobby} isHost={isHost} onUpdateSetup={updateSetup} />
         </main>
       )}
+      <NetworkDebugPanel />
       <GameContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
     </div>
   );

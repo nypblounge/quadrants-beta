@@ -208,3 +208,27 @@ Future optimizations to consider before larger public playtests:
 - Consider a lower-frequency remote sync with client-side interpolation for movement/projectiles.
 - Keep logs, kill feed, market history, and result snapshots capped aggressively.
 - Add a lightweight bandwidth/debug panel that estimates serialized bytes written per tick during local tests.
+
+## Optimize Firebase v1: Network Debug Panel
+
+This branch adds a lightweight in-browser Firebase Network Debug panel. It instruments the app's Firebase `set`, `update`, `remove`, `get`, and `onValue` calls and estimates JSON payload sizes locally.
+
+Open the floating **Net** button in the lower-right corner while testing a lobby. The panel shows:
+
+- Estimated reads/downloaded and writes/uploaded for the current browser session.
+- Active Firebase listeners.
+- Estimated monthly read pace from the current session rate.
+- Largest Firebase paths by estimated traffic.
+- Recent Firebase events.
+
+These numbers are estimates only. Firebase billing also includes protocol, connection, and encryption overhead, but the panel is useful for finding high-cost paths before deeper refactors.
+
+Recommended test flow:
+
+1. Reset the panel on the home screen.
+2. Host a fresh lobby.
+3. Join from a second browser or incognito window.
+4. Run through lobby, build, buy, and fight phases.
+5. Note the largest paths and total downloaded estimate after a 5–10 minute fight.
+
+Future optimization work should use this panel to compare before/after bandwidth cost for each refactor.

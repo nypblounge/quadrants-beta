@@ -348,7 +348,7 @@ function ContentManager({ onBack }) {
 
   function saveDraft() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeContent(content)));
-    setMessage("Saved local content-manager draft. Refresh the game to test local item/unit/NPC overrides in this browser.");
+    setMessage("Saved local draft. Live/production games ignore drafts; export and commit content to src/content/defaultContent.js to make it available to every player. Local preview only works in npm dev with ?contentPreview=1.");
   }
 
   function resetToCurrentGameContent() {
@@ -504,7 +504,7 @@ function ContentManager({ onBack }) {
       <header className="content-manager-topbar">
         <div>
           <h1>Quadrants Content Manager</h1>
-          <p>Create items, units, NPCs, and loot tables locally. Exports static JS/JSON so Firebase only needs short IDs during matches.</p>
+          <p>Create items, units, NPCs, and loot tables locally. Drafts are editor-only; live matches use the bundled content committed to GitHub so every player has the same shop/prices/stats.</p>
         </div>
         <div className="content-manager-actions">
           <button className="btn" onClick={saveDraft}>Save draft</button>
@@ -521,6 +521,9 @@ function ContentManager({ onBack }) {
       </div>
 
       {message && <div className="content-manager-message">{message}</div>}
+      <div className="content-manager-message warning">
+        Content Manager drafts do not affect live gameplay. Export your changes and commit them to the project to make shop items, prices, units, NPCs, and loot tables identical for all players.
+      </div>
 
       <main className="content-manager-layout">
         {tab === "items" && (
