@@ -26,6 +26,14 @@ const TEAM_LABELS = {
   cyan: 'Cyan'
 };
 
+const PHASE_OPTIONS = [
+  { id: "lobby", label: "Lobby" },
+  { id: "build", label: "Build" },
+  { id: "buy", label: "Buy" },
+  { id: "fight", label: "Fight" },
+  { id: "results", label: "Results" }
+];
+
 function activeTeamsForPlayerCount(value) {
   const playerCount = Math.max(2, Math.min(8, Number(value) || 2));
   const order = playerCount > 4 ? EIGHT_PLAYER_TEAM_ORDER : CLASSIC_TEAM_ORDER;
@@ -63,6 +71,7 @@ export function QuadrantsWsGamePreview() {
   const players = currentPlayers(lobby);
   const activeTeams = activeTeamsForPlayerCount(lobby?.setup?.players);
   const currentPlayer = players.find((player) => String(player.id) === String(clientState.clientId));
+  const isHost = Boolean(lobby?.hostId && String(lobby.hostId) === String(clientState.clientId));
 
   function refreshClientState() {
     const nextState = client.getState();
@@ -262,6 +271,23 @@ export function QuadrantsWsGamePreview() {
     refreshClientState();
   }
 
+  function changePhase(phase) {
+    if (!room) {
+      setStatus("Join or host a WebSocket room first.");
+      return;
+    }
+
+    if (!isHost) {
+      setStatus("Only the room host can change phase.");
+      return;
+    }
+
+    client.changePhase(phase);
+    const nextPhase = PHASE_OPTIONS.find((option) => option.id === phase);
+    setStatus("Changing phase to " + (nextPhase?.label || phase) + ".");
+    refreshClientState();
+  }
+
   return (
     <div className="app-shell">
       <div className="topbar">
@@ -331,6 +357,20 @@ export function QuadrantsWsGamePreview() {
                 <button onClick={() => chooseTeam(null)} disabled={!currentPlayer?.team}>
                   Spectator
                 </button>
+              </div>
+            </div>
+          )}
+
+
+          {lobby && (
+            <div className="phase-picker">
+              <p className="muted">{isHost ? "Change phase" : "Phase controls are host-only"}</p>
+              <div className="action-group">
+                {PHASE_OPTIONS.map((phase) => (
+                  <button key={phase.id} onClick={() => changePhase(phase.id)} disabled={!isHost || lobby.phase === phase.id}>
+                    {lobby.phase === phase.id ? "Phase: " + phase.label : phase.label}
+                  </button>
+                ))}
               </div>
             </div>
           )}
