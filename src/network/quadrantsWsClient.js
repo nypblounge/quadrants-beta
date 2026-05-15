@@ -225,6 +225,10 @@ export function createQuadrantsWsClient(options = {}) {
       return send({ type: "phase_change", phase });
     },
 
+    updateSetup(setup) {
+      return send({ type: "update_setup", setup });
+    },
+
     sendSnapshot(snapshot) {
       return send({ type: "match_snapshot", snapshot });
     },

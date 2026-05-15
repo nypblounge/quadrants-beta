@@ -288,6 +288,22 @@ export function QuadrantsWsGamePreview() {
     refreshClientState();
   }
 
+  function updateSetup(patch) {
+    if (!room) {
+      setStatus("Join or host a WebSocket room first.");
+      return;
+    }
+
+    if (!isHost) {
+      setStatus("Only the room host can update setup.");
+      return;
+    }
+
+    client.updateSetup(patch);
+    setStatus("Updating room setup.");
+    refreshClientState();
+  }
+
   return (
     <div className="app-shell">
       <div className="topbar">
@@ -399,13 +415,31 @@ export function QuadrantsWsGamePreview() {
               </div>
             </div>
 
-            <div className="card">
-              <h3>Read-only lobby state</h3>
-              <p className="muted">Phase: {lobby.phase}</p>
-              <p className="muted">Players: {players.length}</p>
-              <p className="muted">Grid: {lobby.setup.gridSize}x{lobby.setup.gridSize}</p>
-              <p className="muted">Starting gold: {lobby.setup.startingGold}</p>
-              <p className="muted">Max units: {lobby.setup.maxUnits}</p>
+            <div className='card'>
+              <h3>Lobby setup</h3>
+              <p className='muted'>Phase: {lobby.phase}</p>
+              <p className='muted'>Connected players: {players.length}</p>
+              <p className='muted'>Player slots: {lobby.setup.players}</p>
+              <p className='muted'>Grid: {lobby.setup.gridSize}x{lobby.setup.gridSize}</p>
+              <p className='muted'>Starting gold: {lobby.setup.startingGold}</p>
+              <p className='muted'>Max units: {lobby.setup.maxUnits}</p>
+              <p className='muted'>Base HP: {lobby.setup.baseHp}</p>
+
+              <div className='setup-controls'>
+                <p className='muted'>{isHost ? 'Host setup controls' : 'Setup controls are host-only'}</p>
+                <div className='action-group'>
+                  <button onClick={() => updateSetup({ players: Math.max(2, Number(lobby.setup.players || 2) - 1) })} disabled={!isHost || Number(lobby.setup.players || 2) <= 2}>Players -</button>
+                  <button onClick={() => updateSetup({ players: Math.min(8, Number(lobby.setup.players || 2) + 1) })} disabled={!isHost || Number(lobby.setup.players || 2) >= 8}>Players +</button>
+                  <button onClick={() => updateSetup({ gridSize: Math.max(11, Number(lobby.setup.gridSize || 17) - 2) })} disabled={!isHost || Number(lobby.setup.gridSize || 17) <= 11}>Grid -</button>
+                  <button onClick={() => updateSetup({ gridSize: Math.min(31, Number(lobby.setup.gridSize || 17) + 2) })} disabled={!isHost || Number(lobby.setup.gridSize || 17) >= 31}>Grid +</button>
+                  <button onClick={() => updateSetup({ startingGold: Math.max(0, Number(lobby.setup.startingGold || 0) - 50) })} disabled={!isHost}>Gold -</button>
+                  <button onClick={() => updateSetup({ startingGold: Number(lobby.setup.startingGold || 0) + 50 })} disabled={!isHost}>Gold +</button>
+                  <button onClick={() => updateSetup({ maxUnits: Math.max(1, Number(lobby.setup.maxUnits || 1) - 1) })} disabled={!isHost || Number(lobby.setup.maxUnits || 1) <= 1}>Units -</button>
+                  <button onClick={() => updateSetup({ maxUnits: Number(lobby.setup.maxUnits || 1) + 1 })} disabled={!isHost}>Units +</button>
+                  <button onClick={() => updateSetup({ baseHp: Math.max(1, Number(lobby.setup.baseHp || 1) - 50) })} disabled={!isHost}>Base HP -</button>
+                  <button onClick={() => updateSetup({ baseHp: Number(lobby.setup.baseHp || 1) + 50 })} disabled={!isHost}>Base HP +</button>
+                </div>
+              </div>
             </div>
           </section>
         )}

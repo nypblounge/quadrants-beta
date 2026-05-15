@@ -92,11 +92,13 @@ export function makeQuadrantsLobbyFromWsRoom(room, options = {}) {
   if (!room || typeof room !== "object") return null;
 
   const now = Date.now();
-  const playerCount = Math.max(2, Array.isArray(room.players) ? room.players.length : 2);
+  const roomSetup = room.setup && typeof room.setup === "object" ? room.setup : {};
+  const playerCount = Math.max(2, Number(roomSetup.players) || (Array.isArray(room.players) ? room.players.length : 2));
   const setup = {
     ...WS_BRIDGE_DEFAULT_SETUP,
     players: playerCount,
     alliances: { ...WS_BRIDGE_DEFAULT_TEAM_ALLIANCES },
+    ...roomSetup,
     ...(options.setup || {})
   };
 
