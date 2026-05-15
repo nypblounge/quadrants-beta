@@ -232,3 +232,69 @@ Recommended test flow:
 5. Note the largest paths and total downloaded estimate after a 5–10 minute fight.
 
 Future optimization work should use this panel to compare before/after bandwidth cost for each refactor.
+
+## Local WebSocket Debug Panel
+
+The game includes a local-only WebSocket debug panel for testing the Quadrants WebSocket server without replacing Firebase gameplay.
+
+### Start the local WebSocket server
+
+In a separate Command Prompt window:
+
+```cmd
+cd "C:\Users\PC 30\quadrants-server-test"
+npm run start
+```
+
+The server monitor is available at:
+
+```text
+http://localhost:8080
+```
+
+### Start the game locally
+
+In this project:
+
+```cmd
+cd "C:\Users\PC 30\quadrants-beta"
+npm run dev
+```
+
+Open the game with the debug flag:
+
+```text
+http://localhost:5173/?wsDebug=1
+```
+
+The normal local game URL does not show the panel:
+
+```text
+http://localhost:5173/
+```
+
+### Test flow
+
+Use the WebSocket debug panel to test:
+
+```text
+Connect
+Set Name
+Create Room
+Ready
+Phase Change
+Send Snapshot
+Send Delta
+Send Command
+```
+
+The panel should show WebSocket events such as:
+
+```text
+welcome
+room_created
+room_update
+ping
+```
+
+Firebase gameplay remains unchanged. The debug panel is only a local testing tool while the WebSocket migration is in progress.
