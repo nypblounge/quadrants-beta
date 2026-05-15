@@ -22,6 +22,8 @@ import { makeDefaultContent } from "./content/defaultContent.js";
 import "./styles.css";
 import { createQuadrantsWsClient } from "./network/quadrantsWsClient";
 import { QuadrantsWsDebugPanel } from "./network/QuadrantsWsDebugPanel";
+import { QuadrantsWsLobbyMode } from "./network/QuadrantsWsLobbyMode";
+
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
@@ -32,6 +34,10 @@ if (typeof window !== "undefined") {
 const SHOW_WS_DEBUG_PANEL =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("wsDebug") === "1";
+
+const SHOW_WS_LOBBY_MODE =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("ws") === "1";
 
 const NETWORK_DEBUG_STORAGE_KEY = "quadrants_network_debug_enabled_v1";
 const NETWORK_DEBUG_MAX_ENTRIES = 120;
@@ -8086,11 +8092,15 @@ export default function QuadrantsOnline() {
     }
   }
 
-  if (toolView === "content") {
-    return <ContentManager onBack={closeContentManager} />;
-  }
+  if (SHOW_WS_LOBBY_MODE) {
+  return <QuadrantsWsLobbyMode />;
+}
 
-  if (!lobbyCode || !lobby) {
+if (toolView === "content") {
+  return <ContentManager onBack={closeContentManager} />;
+}
+
+if (!lobbyCode || !lobby) {
   return (
     <>
       <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} onCleanupLobbies={runLobbyCleanup} onOpenContentManager={openContentManager} status={status} cleanupStatus={cleanupStatus} />
