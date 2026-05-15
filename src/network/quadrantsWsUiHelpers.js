@@ -25,7 +25,7 @@ export function defaultWsUrl() {
   const host = window.location.hostname || "localhost";
 
   if (window.location.protocol === "https:") {
-    return "wss://" + host;
+    return "wss://ws.notyourparentsbasement.com";
   }
 
   return "ws://" + host + ":8080";
