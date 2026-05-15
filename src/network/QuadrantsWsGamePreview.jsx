@@ -1,35 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createQuadrantsWsClient } from "./quadrantsWsClient";
 import { makeQuadrantsLobbyFromWsRoom } from "./quadrantsWsLobbyBridge";
-
-function defaultWsUrl() {
-  const host = window.location.hostname || "localhost";
-  return `ws://${host}:8080`;
-}
-
-function normalizeRoomCode(value) {
-  return String(value || "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "")
-    .slice(0, 8);
-}
-
-function savedPlayerName() {
-  try {
-    return window.localStorage?.getItem("quadrants_player_name") || "WebSocket Player";
-  } catch {
-    return "WebSocket Player";
-  }
-}
-
-function savePlayerName(name) {
-  try {
-    window.localStorage?.setItem("quadrants_player_name", name);
-  } catch {
-    // Ignore storage failures.
-  }
-}
+import {
+  defaultWsUrl,
+  normalizeRoomCode,
+  savedPlayerName,
+  savePlayerName
+} from "./quadrantsWsUiHelpers";
 
 function currentPlayers(lobby) {
   return Object.values(lobby?.players || {});
