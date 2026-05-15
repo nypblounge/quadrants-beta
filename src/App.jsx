@@ -20,11 +20,14 @@ import { firebaseConfig } from "./firebaseConfig";
 import ContentManager from "./ContentManager.jsx";
 import { makeDefaultContent } from "./content/defaultContent.js";
 import "./styles.css";
+import { createQuadrantsWsClient } from "./network/quadrantsWsClient";
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-
+if (typeof window !== "undefined") {
+  window.createQuadrantsWsClient = createQuadrantsWsClient;
+}
 
 const NETWORK_DEBUG_STORAGE_KEY = "quadrants_network_debug_enabled_v1";
 const NETWORK_DEBUG_MAX_ENTRIES = 120;
