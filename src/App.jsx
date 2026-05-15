@@ -4924,6 +4924,17 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCl
       <div className="home-card">
         <h1>Quadrants Beta Online</h1>
         <p>Host a lobby, share the 6-letter code, and battle with live Firebase syncing.</p>
+        <div className="action-group">
+          <Button
+            onClick={() => {
+              window.location.search = "?wsGamePreview=1";
+            }}
+            variant="primary"
+          >
+            Play WebSocket Online Alpha
+          </Button>
+        </div>
+        <p className="muted">New server-backed multiplayer test. Uses ws.notyourparentsbasement.com instead of Firebase lobbies.</p>
 
         <label>
           Display name
