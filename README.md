@@ -298,3 +298,47 @@ ping
 ```
 
 Firebase gameplay remains unchanged. The debug panel is only a local testing tool while the WebSocket migration is in progress.
+
+## Local WebSocket Lobby Mode
+
+The game also includes a standalone WebSocket lobby mode for testing the new server flow without replacing the normal Firebase game.
+
+Start the local WebSocket server:
+
+```cmd
+cd "C:\Users\PC 30\quadrants-server-test"
+npm run start
+```
+
+Start the game locally:
+
+```cmd
+cd "C:\Users\PC 30\quadrants-beta"
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:5173/?ws=1
+```
+
+This mode lets you test:
+
+```text
+Host WS Lobby
+Join WS Lobby
+Ready
+Phase changes
+Sample commands
+Sample snapshots
+Sample deltas
+```
+
+The normal game URL still uses Firebase:
+
+```text
+http://localhost:5173/
+```
+
+The WebSocket lobby mode is a migration test path. It does not yet run the full existing Quadrants match UI through WebSockets.
