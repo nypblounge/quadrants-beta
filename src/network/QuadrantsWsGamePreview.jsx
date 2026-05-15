@@ -214,6 +214,21 @@ export function QuadrantsWsGamePreview() {
     }
   }
 
+  function toggleReady() {
+    if (!room) {
+      setStatus("Join or host a WebSocket room first.");
+      return;
+    }
+
+    const clientId = clientState.clientId;
+    const currentPlayer = room.players?.find((player) => String(player.id) === String(clientId));
+    const nextReady = !Boolean(currentPlayer?.ready);
+
+    client.setReady(nextReady);
+    setStatus(nextReady ? "Marked ready." : "Marked not ready.");
+    refreshClientState();
+  }
+
   return (
     <div className="app-shell">
       <div className="topbar">
@@ -266,6 +281,11 @@ export function QuadrantsWsGamePreview() {
             <button onClick={disconnect}>Disconnect</button>
             <button onClick={hostRoom}>Host Preview Room</button>
             <button onClick={joinRoom}>Join Preview Room</button>
+            <button onClick={toggleReady} disabled={!room}>
+              {players.some((player) => String(player.id) === String(clientState.clientId) && player.wsReady)
+                ? "Ready: Yes"
+                : "Ready: No"}
+            </button>
           </div>
 
           <p className="muted">{status}</p>
