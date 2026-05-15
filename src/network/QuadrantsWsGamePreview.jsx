@@ -72,6 +72,24 @@ export function QuadrantsWsGamePreview() {
   const activeTeams = activeTeamsForPlayerCount(lobby?.setup?.players);
   const currentPlayer = players.find((player) => String(player.id) === String(clientState.clientId));
   const isHost = Boolean(lobby?.hostId && String(lobby.hostId) === String(clientState.clientId));
+  const readyPlayers = players.filter((player) => player.connected);
+  const allPlayersReady = readyPlayers.length > 0 && readyPlayers.every((player) => player.wsReady);
+  const allPlayersAssignedTeams = readyPlayers.length > 0 && readyPlayers.every((player) => Boolean(player.team));
+  const hasEnoughPlayersToStart = readyPlayers.length >= 2;
+  const canStartBuild = isHost && lobby?.phase === "lobby" && hasEnoughPlayersToStart && allPlayersReady && allPlayersAssignedTeams;
+  const startBuildHelp = !lobby
+    ? "Join or host a WebSocket room first."
+    : !isHost
+      ? "Only the host can start build."
+      : lobby.phase !== "lobby"
+        ? "Build can only be started from the lobby phase."
+        : !hasEnoughPlayersToStart
+          ? "At least 2 connected players are needed before build."
+          : !allPlayersAssignedTeams
+            ? "Every connected player needs a team before build."
+            : !allPlayersReady
+              ? "Every connected player needs to be ready before build."
+              : "Ready to start build.";
 
   function refreshClientState() {
     const nextState = client.getState();
@@ -116,7 +134,12 @@ export function QuadrantsWsGamePreview() {
         setStatus(`Connected as client ${message.clientId}.`);
       }
 
-      if (message.type === "room_created" || message.type === "room_update" || message.type === "session_resumed") {
+      if (message.type === "phase_change" && message.phase) {
+        setRoom((currentRoom) => currentRoom ? { ...currentRoom, phase: message.phase } : currentRoom);
+        setStatus("Phase changed to " + message.phase + ".");
+      }
+
+      if (message.type === "room_created" || message.type === "room_update" || message.type === "phase_change" || message.type === "session_resumed") {
         if (message.room) {
           setRoom(message.room);
           if (message.room.code) setJoinCode(message.room.code);
@@ -283,8 +306,46 @@ export function QuadrantsWsGamePreview() {
     }
 
     client.changePhase(phase);
+    setRoom((currentRoom) => currentRoom ? { ...currentRoom, phase } : currentRoom);
     const nextPhase = PHASE_OPTIONS.find((option) => option.id === phase);
     setStatus("Changing phase to " + (nextPhase?.label || phase) + ".");
+    refreshClientState();
+  }
+
+  function startBuild() {
+    if (!room) {
+      setStatus("Join or host a WebSocket room first.");
+      return;
+    }
+
+    if (!isHost) {
+      setStatus("Only the room host can start build.");
+      return;
+    }
+
+    if (lobby?.phase !== "lobby") {
+      setStatus("Build can only be started from the lobby phase.");
+      return;
+    }
+
+    if (!hasEnoughPlayersToStart) {
+      setStatus("At least 2 connected players are needed before build.");
+      return;
+    }
+
+    if (!allPlayersAssignedTeams) {
+      setStatus("Every connected player needs a team before build.");
+      return;
+    }
+
+    if (!allPlayersReady) {
+      setStatus("Every connected player needs to be ready before build.");
+      return;
+    }
+
+    client.changePhase("build");
+    setRoom((currentRoom) => currentRoom ? { ...currentRoom, phase: "build" } : currentRoom);
+    setStatus("Starting build phase.");
     refreshClientState();
   }
 
@@ -390,6 +451,16 @@ export function QuadrantsWsGamePreview() {
               </div>
             </div>
           )}
+
+          {lobby && (
+            <div className="start-build-panel">
+              <p className="muted">Start Build readiness: {startBuildHelp}</p>
+              <div className="action-group">
+                <button onClick={startBuild} disabled={!canStartBuild}>Start Build</button>
+              </div>
+            </div>
+          )}
+
 
           <p className="muted">{status}</p>
         </section>
