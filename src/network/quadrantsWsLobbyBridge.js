@@ -1,22 +1,63 @@
-const TEAM_SEQUENCE = ["red", "blue", "green", "purple", "orange", "cyan", "pink", "yellow"];
+const CLASSIC_TEAMS = ["red", "green", "blue", "purple"];
+const EIGHT_PLAYER_TEAMS = ["red", "yellow", "cyan", "purple", "green", "blue", "orange", "pink"];
 
 export const WS_BRIDGE_DEFAULT_SETUP = {
   players: 2,
-  gridSize: 20,
-  startingGold: 100,
-  maxUnits: 10,
-  baseHp: 100,
+  gridSize: 17,
+  startingGold: 350,
+  maxUnits: 12,
+  baseHp: 250,
+  baseZoneSize: 3,
+  centerSize: 5,
+  matchTimeLimit: 30 * 60,
   gameMode: "classic",
+  mapTemplate: "classic",
+  ctfScoreLimit: 3,
+  kothTimeLimit: 60,
+  npcSpawns: false,
+  npcSpawnAmount: 1,
+  npcSpawnInterval: 60,
+  goblinSpawnAmount: 1,
+  goblinSpawnInterval: 60,
+  hillGiantSpawnAmount: 0,
+  hillGiantSpawnInterval: 120,
+  npcSpawnSettings: {},
   teamMode: false,
-  npcSpawns: false
+  restockGoldOnContinued: false,
+  continuedRestockGold: 150
 };
 
-function teamForIndex(index) {
-  return TEAM_SEQUENCE[index % TEAM_SEQUENCE.length] || "red";
+export const WS_BRIDGE_DEFAULT_TEAM_ALLIANCES = {
+  red: "warm",
+  orange: "warm",
+  yellow: "warm",
+  green: "warm",
+  blue: "cool",
+  purple: "cool",
+  pink: "cool",
+  cyan: "cool"
+};
+
+function clampPlayerCount(value) {
+  return Math.max(2, Math.min(8, Number(value) || 2));
 }
 
-function normalizeWsPlayers(room) {
+function activeTeamsForPlayerCount(value) {
+  const count = clampPlayerCount(value);
+  if (count >= 5) return EIGHT_PLAYER_TEAMS.slice(0, count);
+  if (count === 4) return [...CLASSIC_TEAMS];
+  if (count === 3) return ["red", "green", "blue"];
+  return ["red", "blue"];
+}
+
+function teamForIndex(index, playerCount) {
+  const teams = activeTeamsForPlayerCount(playerCount);
+  return teams[index % teams.length] || "red";
+}
+
+function normalizeWsPlayers(room, setup) {
   const players = Array.isArray(room?.players) ? room.players : [];
+  const playerCount = setup?.players || players.length || 2;
 
   return Object.fromEntries(
     players.map((player, index) => [
@@ -24,7 +65,7 @@ function normalizeWsPlayers(room) {
       {
         id: String(player.id),
         name: String(player.name || `Player ${index + 1}`).slice(0, 18),
-        team: player.team || teamForIndex(index),
+        team: player.team || teamForIndex(index, playerCount),
         connected: Boolean(player.connected),
         joinedAt: Number(player.joinedAt || room?.createdAt || Date.now()),
         lastSeen: Number(player.lastSeenAt || Date.now()),
@@ -49,9 +90,11 @@ export function makeQuadrantsLobbyFromWsRoom(room, options = {}) {
   if (!room || typeof room !== "object") return null;
 
   const now = Date.now();
+  const playerCount = Math.max(2, Array.isArray(room.players) ? room.players.length : 2);
   const setup = {
     ...WS_BRIDGE_DEFAULT_SETUP,
-    players: Math.max(2, Array.isArray(room.players) ? room.players.length : 2),
+    players: playerCount,
+    alliances: { ...WS_BRIDGE_DEFAULT_TEAM_ALLIANCES },
     ...(options.setup || {})
   };
 
@@ -62,8 +105,9 @@ export function makeQuadrantsLobbyFromWsRoom(room, options = {}) {
     createdAt: Number(room.createdAt || now),
     updatedAt: Number(room.latestDeltaAt || room.latestSnapshotAt || now),
     lastActivityAt: Number(room.latestDeltaAt || room.latestSnapshotAt || now),
+    cleanupAfterHours: 24,
     setup,
-    players: normalizeWsPlayers(room),
+    players: normalizeWsPlayers(room, setup),
     ready: {
       build: readyMapForPlayers(room),
       buy: readyMapForPlayers(room)
