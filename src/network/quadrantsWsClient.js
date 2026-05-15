@@ -217,6 +217,10 @@ export function createQuadrantsWsClient(options = {}) {
       return send({ type: "player_ready", ready });
     },
 
+    chooseTeam(team) {
+      return send({ type: "choose_team", team: team || null });
+    },
+
     changePhase(phase) {
       return send({ type: "phase_change", phase });
     },

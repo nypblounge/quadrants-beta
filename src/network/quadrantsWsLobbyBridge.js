@@ -65,7 +65,9 @@ function normalizeWsPlayers(room, setup) {
       {
         id: String(player.id),
         name: String(player.name || `Player ${index + 1}`).slice(0, 18),
-        team: player.team || teamForIndex(index, playerCount),
+        team: Object.prototype.hasOwnProperty.call(player, "team")
+          ? player.team || null
+          : teamForIndex(index, playerCount),
         connected: Boolean(player.connected),
         joinedAt: Number(player.joinedAt || room?.createdAt || Date.now()),
         lastSeen: Number(player.lastSeenAt || Date.now()),

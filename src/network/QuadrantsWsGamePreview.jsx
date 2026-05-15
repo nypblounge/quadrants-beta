@@ -12,6 +12,26 @@ function currentPlayers(lobby) {
   return Object.values(lobby?.players || {});
 }
 
+const CLASSIC_TEAM_ORDER = ['red', 'blue', 'green', 'purple'];
+const EIGHT_PLAYER_TEAM_ORDER = ['red', 'yellow', 'cyan', 'purple', 'green', 'blue', 'orange', 'pink'];
+
+const TEAM_LABELS = {
+  red: 'Red',
+  orange: 'Orange',
+  yellow: 'Yellow',
+  green: 'Green',
+  blue: 'Blue',
+  purple: 'Purple',
+  pink: 'Pink',
+  cyan: 'Cyan'
+};
+
+function activeTeamsForPlayerCount(value) {
+  const playerCount = Math.max(2, Math.min(8, Number(value) || 2));
+  const order = playerCount > 4 ? EIGHT_PLAYER_TEAM_ORDER : CLASSIC_TEAM_ORDER;
+  return order.slice(0, playerCount);
+}
+
 function prettyJson(value) {
   return JSON.stringify(value, null, 2);
 }
@@ -41,6 +61,8 @@ export function QuadrantsWsGamePreview() {
   const client = clientRef.current;
   const lobby = useMemo(() => makeQuadrantsLobbyFromWsRoom(room), [room]);
   const players = currentPlayers(lobby);
+  const activeTeams = activeTeamsForPlayerCount(lobby?.setup?.players);
+  const currentPlayer = players.find((player) => String(player.id) === String(clientState.clientId));
 
   function refreshClientState() {
     const nextState = client.getState();
@@ -216,16 +238,27 @@ export function QuadrantsWsGamePreview() {
 
   function toggleReady() {
     if (!room) {
-      setStatus("Join or host a WebSocket room first.");
+      setStatus('Join or host a WebSocket room first.');
       return;
     }
 
     const clientId = clientState.clientId;
-    const currentPlayer = room.players?.find((player) => String(player.id) === String(clientId));
-    const nextReady = !Boolean(currentPlayer?.ready);
+    const currentRoomPlayer = room.players?.find((player) => String(player.id) === String(clientId));
+    const nextReady = !Boolean(currentRoomPlayer?.ready);
 
     client.setReady(nextReady);
-    setStatus(nextReady ? "Marked ready." : "Marked not ready.");
+    setStatus(nextReady ? 'Marked ready.' : 'Marked not ready.');
+    refreshClientState();
+  }
+
+  function chooseTeam(team) {
+    if (!room) {
+      setStatus('Join or host a WebSocket room first.');
+      return;
+    }
+
+    client.chooseTeam(team);
+    setStatus(team ? 'Choosing ' + (TEAM_LABELS[team] || team) + ' team.' : 'Choosing spectator.');
     refreshClientState();
   }
 
@@ -282,11 +315,25 @@ export function QuadrantsWsGamePreview() {
             <button onClick={hostRoom}>Host Preview Room</button>
             <button onClick={joinRoom}>Join Preview Room</button>
             <button onClick={toggleReady} disabled={!room}>
-              {players.some((player) => String(player.id) === String(clientState.clientId) && player.wsReady)
-                ? "Ready: Yes"
-                : "Ready: No"}
+              {currentPlayer?.wsReady ? 'Ready: Yes' : 'Ready: No'}
             </button>
           </div>
+
+          {lobby && (
+            <div className='team-picker'>
+              <p className='muted'>Choose team</p>
+              <div className='action-group'>
+                {activeTeams.map((team) => (
+                  <button key={team} onClick={() => chooseTeam(team)} disabled={currentPlayer?.team === team}>
+                    {currentPlayer?.team === team ? 'Team: ' + (TEAM_LABELS[team] || team) : TEAM_LABELS[team] || team}
+                  </button>
+                ))}
+                <button onClick={() => chooseTeam(null)} disabled={!currentPlayer?.team}>
+                  Spectator
+                </button>
+              </div>
+            </div>
+          )}
 
           <p className="muted">{status}</p>
         </section>
