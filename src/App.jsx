@@ -21,13 +21,17 @@ import ContentManager from "./ContentManager.jsx";
 import { makeDefaultContent } from "./content/defaultContent.js";
 import "./styles.css";
 import { createQuadrantsWsClient } from "./network/quadrantsWsClient";
-
+import { QuadrantsWsDebugPanel } from "./network/QuadrantsWsDebugPanel";
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
 if (typeof window !== "undefined") {
   window.createQuadrantsWsClient = createQuadrantsWsClient;
 }
+
+const SHOW_WS_DEBUG_PANEL =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("wsDebug") === "1";
 
 const NETWORK_DEBUG_STORAGE_KEY = "quadrants_network_debug_enabled_v1";
 const NETWORK_DEBUG_MAX_ENTRIES = 120;
@@ -8087,8 +8091,13 @@ export default function QuadrantsOnline() {
   }
 
   if (!lobbyCode || !lobby) {
-    return <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} onCleanupLobbies={runLobbyCleanup} onOpenContentManager={openContentManager} status={status} cleanupStatus={cleanupStatus} />;
-  }
+  return (
+    <>
+      <HomeScreen name={name} setName={setName} joinCode={joinCode} setJoinCode={setJoinCode} onHost={hostLobby} onJoin={joinLobby} onCleanupLobbies={runLobbyCleanup} onOpenContentManager={openContentManager} status={status} cleanupStatus={cleanupStatus} />
+      {SHOW_WS_DEBUG_PANEL && <QuadrantsWsDebugPanel />}
+    </>
+  );
+}
 
 
   if (!player) {
@@ -8121,6 +8130,7 @@ export default function QuadrantsOnline() {
 
   return (
     <div className={bodyClass}>
+        {SHOW_WS_DEBUG_PANEL && <QuadrantsWsDebugPanel />}
       <header className="topbar">
         <div>
           <h1>Quadrants Beta Online</h1>
