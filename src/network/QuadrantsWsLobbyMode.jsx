@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createQuadrantsWsClient } from "./quadrantsWsClient";
-
+import { makeQuadrantsLobbyFromWsRoom } from "./quadrantsWsLobbyBridge";
 function defaultWsUrl() {
   const host = window.location.hostname || "localhost";
   return `ws://${host}:8080`;
@@ -300,7 +300,7 @@ export function QuadrantsWsLobbyMode() {
     room &&
     (room.hostId === currentClientId || players.some((player) => player.id === currentClientId && player.isHost))
   );
-
+const quadrantsLobbyPreview = makeQuadrantsLobbyFromWsRoom(room);
   return (
     <div style={styles.page}>
       <div style={styles.shell}>
@@ -413,7 +413,12 @@ export function QuadrantsWsLobbyMode() {
                 ))
               )}
             </div>
-
+{quadrantsLobbyPreview && (
+  <details style={styles.details} open>
+    <summary>Quadrants lobby bridge preview</summary>
+    <pre style={styles.pre}>{prettyJson(quadrantsLobbyPreview)}</pre>
+  </details>
+)}
             <details style={styles.details}>
               <summary>Raw room snapshot</summary>
               <pre style={styles.pre}>{prettyJson(room)}</pre>
