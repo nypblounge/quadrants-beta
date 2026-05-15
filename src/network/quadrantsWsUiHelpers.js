@@ -1,6 +1,34 @@
 export function defaultWsUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const urlParam = params.get("wsUrl") || params.get("wsURL") || params.get("wsServer");
+
+  if (urlParam) {
+    try {
+      window.localStorage?.setItem("quadrants_ws_url", urlParam);
+    } catch {
+      // Ignore storage failures.
+    }
+
+    return urlParam;
+  }
+
+  try {
+    const savedUrl = window.localStorage?.getItem("quadrants_ws_url");
+    if (savedUrl) return savedUrl;
+  } catch {
+    // Ignore storage failures.
+  }
+
+  const explicitEnvUrl = import.meta.env?.VITE_QUADRANTS_WS_URL;
+  if (explicitEnvUrl) return explicitEnvUrl;
+
   const host = window.location.hostname || "localhost";
-  return `ws://${host}:8080`;
+
+  if (window.location.protocol === "https:") {
+    return "wss://" + host;
+  }
+
+  return "ws://" + host + ":8080";
 }
 
 export function normalizeRoomCode(value) {
