@@ -24,12 +24,14 @@ import { createQuadrantsWsClient } from "./network/quadrantsWsClient";
 import { QuadrantsWsDebugPanel } from "./network/QuadrantsWsDebugPanel";
 import { QuadrantsWsLobbyMode } from "./network/QuadrantsWsLobbyMode";
 import { QuadrantsWsGamePreview } from "./network/QuadrantsWsGamePreview";
+import { quadrantsWsStoreClient } from "./network/quadrantsWsStoreClient";
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
 if (typeof window !== "undefined") {
   window.createQuadrantsWsClient = createQuadrantsWsClient;
+  window.quadrantsWsStoreClient = quadrantsWsStoreClient;
 }
 
 const SHOW_WS_DEBUG_PANEL =
@@ -43,6 +45,10 @@ const SHOW_WS_LOBBY_MODE =
 const SHOW_WS_GAME_PREVIEW =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("wsGamePreview") === "1";
+
+const USE_WS_FULL_GAME =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("wsFullGame") === "1";
 
 const NETWORK_DEBUG_STORAGE_KEY = "quadrants_network_debug_enabled_v1";
 const NETWORK_DEBUG_MAX_ENTRIES = 120;
@@ -138,24 +144,58 @@ function recordNetworkMetric(kind, targetRef, payload, extra = {}) {
   notifyNetworkDebugChanged();
 }
 
+function pathFromRef(targetRef) {
+  return cleanFirebasePath(targetRef?.toString?.() || targetRef || "/");
+}
+
+function makeStoreSnapshot(path, value) {
+  const cleanPath = String(path || "").replace(/^\/+|\/+$/g, "");
+  return {
+    val: () => value,
+    exists: () => value !== null && value !== undefined,
+    key: cleanPath.split("/").filter(Boolean).at(-1) || null,
+  };
+}
+
+function finishNetworkListener(unsubscribe) {
+  return () => {
+    const current = networkDebugState();
+    if (current?.enabled) {
+      current.totals.activeListeners = Math.max(0, current.totals.activeListeners - 1);
+      notifyNetworkDebugChanged();
+    }
+    if (typeof unsubscribe === "function") unsubscribe();
+  };
+}
+
 function set(targetRef, value) {
   const safeValue = sanitizeFirebaseValue(value);
   recordNetworkMetric("set", targetRef, safeValue);
+  if (USE_WS_FULL_GAME) return quadrantsWsStoreClient.set(pathFromRef(targetRef), safeValue);
   return firebaseSet(targetRef, safeValue);
 }
 
 function update(targetRef, value) {
   const safeValue = sanitizeFirebaseValue(value);
   recordNetworkMetric("update", targetRef, safeValue);
+  if (USE_WS_FULL_GAME) return quadrantsWsStoreClient.update(pathFromRef(targetRef), safeValue);
   return firebaseUpdate(targetRef, safeValue);
 }
 
 function remove(targetRef) {
   recordNetworkMetric("remove", targetRef, null);
+  if (USE_WS_FULL_GAME) return quadrantsWsStoreClient.remove(pathFromRef(targetRef));
   return firebaseRemove(targetRef);
 }
 
 function get(targetRef) {
+  if (USE_WS_FULL_GAME) {
+    return quadrantsWsStoreClient.get(pathFromRef(targetRef)).then((snap) => {
+      recordNetworkMetric("get", targetRef, snap.val());
+      return snap;
+    });
+  }
+
   return firebaseGet(targetRef).then((snap) => {
     recordNetworkMetric("get", targetRef, snap.val());
     return snap;
@@ -170,21 +210,27 @@ function onValue(targetRef, callback, cancelCallbackOrListenOptions, options) {
     state.totals.activeListeners += 1;
     recordNetworkMetric("listener", targetRef, { active: state.totals.activeListeners }, { listenerId });
   }
+
   const wrappedCallback = (snap) => {
     recordNetworkMetric("onValue", targetRef, snap.val(), { listenerId });
     callback(snap);
   };
-  const unsubscribe = firebaseOnValue(targetRef, wrappedCallback, cancelCallbackOrListenOptions, options);
-  return () => {
-    const current = networkDebugState();
-    if (current?.enabled) {
-      current.totals.activeListeners = Math.max(0, current.totals.activeListeners - 1);
-      notifyNetworkDebugChanged();
-    }
-    unsubscribe();
-  };
-}
 
+  if (USE_WS_FULL_GAME) {
+    const path = pathFromRef(targetRef);
+
+    if (path === ".info/connected") {
+      const timerId = window.setTimeout(() => wrappedCallback(makeStoreSnapshot(path, true)), 0);
+      return finishNetworkListener(() => window.clearTimeout(timerId));
+    }
+
+    const unsubscribe = quadrantsWsStoreClient.onValue(path, wrappedCallback);
+    return finishNetworkListener(unsubscribe);
+  }
+
+  const unsubscribe = firebaseOnValue(targetRef, wrappedCallback, cancelCallbackOrListenOptions, options);
+  return finishNetworkListener(unsubscribe);
+}
 function formatBytes(bytes) {
   const n = Number(bytes || 0);
   if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
@@ -4885,6 +4931,7 @@ function isStaleLobby(lobby, now = Date.now()) {
 }
 
 async function cleanupStaleLobbies({ protectCode = "", force = false } = {}) {
+  if (USE_WS_FULL_GAME) return { checked: 0, removed: 0, skipped: true };
   const now = Date.now();
   if (!force) {
     const last = Number(localStorage.getItem("quadrants_lobby_cleanup_last") || 0);
@@ -6873,7 +6920,7 @@ export default function QuadrantsOnline() {
     const unsub = onValue(connectedRef, (snap) => {
       if (snap.val() === true) {
         writePresence();
-        if (!disconnectReady) {
+        if (!USE_WS_FULL_GAME && !disconnectReady) {
           disconnectReady = true;
           onDisconnect(playerRef).update({ connected: false, lastSeen: serverTimestamp() });
         }
@@ -6886,6 +6933,14 @@ export default function QuadrantsOnline() {
     return () => {
       unsub();
       if (heartbeatId) window.clearInterval(heartbeatId);
+      if (USE_WS_FULL_GAME) {
+        const now = Date.now();
+        update(ref(db), {
+          [`lobbies/${lobbyCode}/players/${playerId}/connected`]: false,
+          [`lobbies/${lobbyCode}/players/${playerId}/lastSeen`]: now,
+          [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+        }).catch(() => {});
+      }
     };
   }, [lobbyCode, playerId, playerExistsInLobby]);
 
