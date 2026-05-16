@@ -8239,18 +8239,22 @@ export default function QuadrantsOnline() {
           <label className="toggle-check"><input type="checkbox" checked={visualToggles.showUnitNames} onChange={(e) => setVisualToggles((v) => ({ ...v, showUnitNames: e.target.checked }))} /> Names</label>
           <Pill tone={player.connected ? "ready" : "waiting"}>{player.name}</Pill>
           <Pill>{player.team ? teamDisplayLabel(lobby, player.team) : "Spectator"}</Pill>
-          {isHost && <Pill tone="host">You are host</Pill>}
-          {isHost && phase !== "lobby" && (
-            <div className="host-kick-inline">
-              <select value={hostKickSelectId} onChange={(e) => setHostKickSelectId(e.target.value)} title="Kick or replace an AFK player">
+          <span className={`host-status-slot ${isHost ? "" : "is-placeholder"}`}>
+            <Pill tone="host">You are host</Pill>
+          </span>
+          {phase !== "lobby" && (
+            <div className={`host-kick-inline host-only-slot ${isHost ? "" : "is-placeholder"}`}>
+              <select disabled={!isHost} value={hostKickSelectId} onChange={(e) => setHostKickSelectId(e.target.value)} title="Kick or replace an AFK player">
                 <option value="">Kick player…</option>
                 {currentPlayers(lobby).filter((p) => p.id !== playerId).map((p) => <option key={p.id} value={p.id}>{p.name}{isCpuPlayer(p) ? " (CPU)" : ""}</option>)}
               </select>
-              <Button onClick={() => hostKickSelectId && hostKickPlayer(hostKickSelectId)} disabled={!hostKickSelectId}>Kick</Button>
+              <Button onClick={() => hostKickSelectId && hostKickPlayer(hostKickSelectId)} disabled={!isHost || !hostKickSelectId}>Kick</Button>
             </div>
           )}
           <Button onClick={leaveLobby}>Leave</Button>
-          {isHost && <Button onClick={deleteLobby}>Delete Lobby</Button>}
+          <span className={`host-delete-slot ${isHost ? "" : "is-placeholder"}`}>
+            <Button onClick={deleteLobby} disabled={!isHost}>Delete Lobby</Button>
+          </span>
         </div>
       </header>
 

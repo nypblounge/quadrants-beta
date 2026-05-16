@@ -3208,3 +3208,24 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
     width: 100%;
   }
 }
+
+/* Stable topbar host controls */
+.host-status-slot,
+.host-delete-slot {
+  display: inline-flex;
+  justify-content: center;
+  min-width: 112px;
+}
+.host-delete-slot {
+  min-width: 122px;
+}
+.host-only-slot {
+  min-width: 235px;
+  justify-content: center;
+}
+.host-status-slot.is-placeholder,
+.host-delete-slot.is-placeholder,
+.host-only-slot.is-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
