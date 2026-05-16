@@ -4969,23 +4969,12 @@ async function cleanupStaleLobbies({ protectCode = "", force = false } = {}) {
   return { checked, removed, skipped: false };
 }
 
-function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCleanupLobbies, onOpenContentManager, status, cleanupStatus }) {
+function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onOpenContentManager, status, cleanupStatus }) {
   return (
     <div className="home-screen">
       <div className="home-card">
         <h1>Quadrants Beta Online</h1>
-        <p>Host a lobby, share the 6-letter code, and battle with live Firebase syncing.</p>
-        <div className="action-group">
-          <Button
-            onClick={() => {
-              window.location.search = "?wsGamePreview=1";
-            }}
-            variant="primary"
-          >
-            Play WebSocket Online Alpha
-          </Button>
-        </div>
-        <p className="muted">New server-backed multiplayer test. Uses ws.notyourparentsbasement.com instead of Firebase lobbies.</p>
+        <p>Host a lobby, share the 6-letter code, and battle through the Quadrants WebSocket server.</p>
 
         <label>
           Display name
@@ -4996,13 +4985,9 @@ function HomeScreen({ name, setName, joinCode, setJoinCode, onHost, onJoin, onCl
           <Button onClick={onHost} disabled={!name.trim()} variant="primary">
             Host Lobby
           </Button>
-          <Button onClick={onCleanupLobbies}>
-            Clean Old Lobbies
-          </Button>
           <Button onClick={onOpenContentManager}>
             Content Manager
           </Button>
-          <p className="cleanup-hint">Inactive lobbies auto-clear after 24 hours. Finished results lobbies clear after 6 hours. Cleanup runs when someone opens the app, and this button runs it immediately.</p>
         </div>
 
         <div className="join-box">
