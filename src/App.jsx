@@ -5880,7 +5880,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
   const teams = activeTeams(game.setup);
   const allUnits = arrayFromObject(game.units);
   const myUnits = allUnits.filter((u) => u.team === player.team).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-  const overLimitTeams = teams.filter((team) => allUnits.filter((u) => u.team === team).length > Number(game.setup.maxUnits || DEFAULT_SETUP.maxUnits));
+  const overLimitTeams = teams.filter((team) => allUnits.filter((u) => u.team === team).length > Number(game.setup?.maxUnits || DEFAULT_SETUP.maxUnits));
   const overLimit = overLimitTeams.includes(player.team);
   const canAdvance = allReadyForPhase(lobby, "buy") && overLimitTeams.length === 0;
   const [shopTab, setShopTab] = useState("units");
@@ -5908,7 +5908,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
           </div>
           <div className="buy-big-meters">
             <div><span>Gold</span><b>{currentGold}g</b></div>
-            <div><span>Units</span><b>{myUnits.length}/{game.setup.maxUnits}</b></div>
+            <div><span>Units</span><b>{myUnits.length}/{game.setup?.maxUnits || DEFAULT_SETUP.maxUnits}</b></div>
             <div><span>Loot</span><b>{inventoryUsed}/{INVENTORY_SIZE}</b></div>
           </div>
         </div>
@@ -7435,7 +7435,7 @@ export default function QuadrantsOnline() {
     const preparedGame = ensureCpuRosters(lobby.game, lobby);
     const teams = activeTeams(preparedGame.setup);
     const units = arrayFromObject(preparedGame.units).map(normalizeRuntimeUnit).filter((u) => u && STYLE[u.style]);
-    const overLimitTeam = teams.find((team) => units.filter((u) => u.team === team).length > Number(lobby.game.setup.maxUnits || DEFAULT_SETUP.maxUnits));
+    const overLimitTeam = teams.find((team) => units.filter((u) => u.team === team).length > Number(lobby.game.setup?.maxUnits || lobby.setup?.maxUnits || DEFAULT_SETUP.maxUnits));
     if (overLimitTeam) {
       alert(`${TEAM_META[overLimitTeam]?.name || overLimitTeam} is over the unit cap. Sell units before starting.`);
       return;
@@ -7558,7 +7558,7 @@ export default function QuadrantsOnline() {
     if (!style) return;
     const units = arrayFromObject(game.units);
     const owned = units.filter((u) => u.team === team).length + arrayFromObject(game.respawnQueue).filter((u) => u.team === team).length;
-    if (owned >= game.setup.maxUnits) return;
+    if (owned >= (game.setup?.maxUnits || DEFAULT_SETUP.maxUnits)) return;
     const gold = game.gold?.[team] ?? 0;
     if (gold < style.cost) return;
     const id = `${team}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -8204,10 +8204,11 @@ export default function QuadrantsOnline() {
   const myVoteResync = Boolean(lobby.resyncVote?.votes?.[playerId]);
   const fightSimAge = simTickAgeMs(lobby, clockNow);
   const fightLooksFrozen = isFightSimStale(lobby, clockNow);
-  const fightClock = game && phase === "fight" ? `${formatDuration(game.fightTime || 0)} / ${formatDuration(game.setup?.matchTimeLimit || DEFAULT_SETUP.matchTimeLimit)}` : null;
-  const phaseTeams = game ? activeTeams(game.setup) : [];
-  const buildCanAdvance = game ? allReadyForPhase(lobby, "build") && phaseTeams.every((team) => teamConnectedToCenter(game.board, team, game.setup)) : false;
-  const buyOverLimitTeams = game ? phaseTeams.filter((team) => arrayFromObject(game.units).filter((u) => u.team === team).length > Number(game.setup.maxUnits || DEFAULT_SETUP.maxUnits)) : [];
+  const effectiveSetup = game?.setup || lobby.setup || DEFAULT_SETUP;
+  const fightClock = game && phase === "fight" ? `${formatDuration(game.fightTime || 0)} / ${formatDuration(effectiveSetup.matchTimeLimit || DEFAULT_SETUP.matchTimeLimit)}` : null;
+  const phaseTeams = game ? activeTeams(effectiveSetup) : [];
+  const buildCanAdvance = game ? allReadyForPhase(lobby, "build") && phaseTeams.every((team) => teamConnectedToCenter(game.board, team, effectiveSetup)) : false;
+  const buyOverLimitTeams = game ? phaseTeams.filter((team) => arrayFromObject(game.units).filter((u) => u.team === team).length > Number(effectiveSetup.maxUnits || DEFAULT_SETUP.maxUnits)) : [];
   const buyCanAdvance = game ? allReadyForPhase(lobby, "buy") && buyOverLimitTeams.length === 0 : false;
   const myBuyOverLimit = player?.team && buyOverLimitTeams.includes(player.team);
 
