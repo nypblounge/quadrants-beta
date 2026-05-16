@@ -5868,8 +5868,11 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const allUnits = arrayFromObject(game.units);
+  const maxUnits = Number(game.setup?.maxUnits || DEFAULT_SETUP.maxUnits);
   const myUnits = allUnits.filter((u) => u.team === player.team).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-  const overLimitTeams = teams.filter((team) => allUnits.filter((u) => u.team === team).length > Number(game.setup?.maxUnits || DEFAULT_SETUP.maxUnits));
+  const isBuyReady = Boolean(readyMap(lobby, "buy")[player.id]);
+  const atUnitCap = myUnits.length >= maxUnits;
+  const overLimitTeams = teams.filter((team) => allUnits.filter((u) => u.team === team).length > maxUnits);
   const overLimit = overLimitTeams.includes(player.team);
   const canAdvance = allReadyForPhase(lobby, "buy") && overLimitTeams.length === 0;
   const [shopTab, setShopTab] = useState("units");
@@ -5897,11 +5900,12 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
           </div>
           <div className="buy-big-meters">
             <div><span>Gold</span><b>{currentGold}g</b></div>
-            <div><span>Units</span><b>{myUnits.length}/{game.setup?.maxUnits || DEFAULT_SETUP.maxUnits}</b></div>
+            <div><span>Units</span><b>{myUnits.length}/{maxUnits}</b></div>
             <div><span>Loot</span><b>{inventoryUsed}/{INVENTORY_SIZE}</b></div>
           </div>
         </div>
         {overLimitTeams.length > 0 && <p className="warning-text">Over unit cap: {overLimitTeams.map((team) => TEAM_META[team]?.name).join(", ")}. Sell units until every team is at the max before the fight can start.</p>}
+        {atUnitCap && <p className="warning-text">Unit cap reached. Sell a unit before buying another.</p>}
         <div className="shop-tabs">
           <button className={shopTab === "units" ? "active" : ""} onClick={() => setShopTab("units")}>Units</button>
           <button className={shopTab === "gear" ? "active" : ""} onClick={() => setShopTab("gear")}>Shop</button>
@@ -5926,7 +5930,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
                 const s = STYLE[styleId];
                 const category = s.resourceTarget ? "support" : s.combatType;
                 return (
-                  <button className="unit-card" key={styleId} onClick={() => onBuy(styleId)}>
+                  <button className="unit-card" key={styleId} onClick={() => onBuy(styleId)} disabled={isBuyReady || atUnitCap || currentGold < s.cost} title={atUnitCap ? "Unit cap reached" : currentGold < s.cost ? "Not enough gold" : "Buy unit"}>
                     <StyleIcon styleId={styleId} size="lg" />
                     <b>{s.name}</b>
                     <span>{s.cost}g • {category} • Rng {s.range} • Speed {attackSpeedLabel(styleId)} • Max {previewMaxHit(styleId)}</span>
@@ -6782,6 +6786,7 @@ export default function QuadrantsOnline() {
   const [toolView, setToolView] = useState(() => (window.location.hash === "#content-manager" ? "content" : "game"));
   const [hostKickSelectId, setHostKickSelectId] = useState("");
   const fightTickInFlightRef = useRef(false);
+  const buyUnitPendingRef = useRef(false);
   const latestLobbyRef = useRef(null);
 
   useEffect(() => {
@@ -7542,21 +7547,29 @@ export default function QuadrantsOnline() {
   async function buyUnit(styleId) {
     if (!lobby || lobby.phase !== "buy" || !player?.team) return;
     if (readyMap(lobby, "buy")[playerId]) return;
-    const team = player.team;
-    const style = STYLE[styleId];
-    if (!style) return;
-    const units = arrayFromObject(game.units);
-    const owned = units.filter((u) => u.team === team).length + arrayFromObject(game.respawnQueue).filter((u) => u.team === team).length;
-    if (owned >= (game.setup?.maxUnits || DEFAULT_SETUP.maxUnits)) return;
-    const gold = game.gold?.[team] ?? 0;
-    if (gold < style.cost) return;
-    const id = `${team}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const unit = makeUnit(id, team, styleId, game.setup, { name: randomUnitName(styleId), ownerPlayerId: playerId });
-    await update(ref(db), {
-      [`lobbies/${lobbyCode}/game/units/${id}`]: unit,
-      [`lobbies/${lobbyCode}/game/gold/${team}`]: gold - style.cost,
-      [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${unit.name}.`, ...(game.log || [])].slice(0, 8),
-    });
+    if (buyUnitPendingRef.current) return;
+    buyUnitPendingRef.current = true;
+
+    try {
+      const team = player.team;
+      const style = STYLE[styleId];
+      if (!style) return;
+      const units = arrayFromObject(game.units);
+      const owned = units.filter((u) => u.team === team).length + arrayFromObject(game.respawnQueue).filter((u) => u.team === team).length;
+      const maxUnits = Number(game.setup?.maxUnits || DEFAULT_SETUP.maxUnits);
+      if (owned >= maxUnits) return;
+      const gold = game.gold?.[team] ?? 0;
+      if (gold < style.cost) return;
+      const id = `${team}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const unit = makeUnit(id, team, styleId, game.setup, { name: randomUnitName(styleId), ownerPlayerId: playerId });
+      await update(ref(db), {
+        [`lobbies/${lobbyCode}/game/units/${id}`]: unit,
+        [`lobbies/${lobbyCode}/game/gold/${team}`]: gold - style.cost,
+        [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${unit.name}.`, ...(game.log || [])].slice(0, 8),
+      });
+    } finally {
+      buyUnitPendingRef.current = false;
+    }
   }
 
   async function removeBuyUnit(unitId) {
