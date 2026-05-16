@@ -34,8 +34,12 @@ if (typeof window !== "undefined") {
   window.quadrantsWsStoreClient = quadrantsWsStoreClient;
 }
 
-const SHOW_WS_DEBUG_PANEL =
+const IS_TESTING_BUILD =
   typeof window !== "undefined" &&
+  (import.meta.env.DEV || ["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname));
+
+const SHOW_WS_DEBUG_PANEL =
+  IS_TESTING_BUILD &&
   new URLSearchParams(window.location.search).get("wsDebug") === "1";
 
 const SHOW_WS_LOBBY_MODE =
