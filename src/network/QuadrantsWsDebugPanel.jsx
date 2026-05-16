@@ -341,7 +341,7 @@ const styles = {
   showButton: {
     position: "fixed",
     right: 16,
-    bottom: 16,
+    bottom: 68,
     zIndex: 9999,
     padding: "8px 10px",
     borderRadius: 999,
