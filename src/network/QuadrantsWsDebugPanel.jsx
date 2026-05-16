@@ -35,6 +35,8 @@ export function QuadrantsWsDebugPanel() {
     lastRoom: null
   });
 
+  const [hidden, setHidden] = useState(false);
+
   if (!clientRef.current) {
     clientRef.current = createQuadrantsWsClient({ url });
   }
@@ -178,6 +180,14 @@ export function QuadrantsWsDebugPanel() {
     setEventLog([]);
   }
 
+  if (hidden) {
+    return (
+      <button type="button" style={styles.showButton} onClick={() => setHidden(false)} title="Show WebSocket debug panel">
+        WS Debug
+      </button>
+    );
+  }
+
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
@@ -187,8 +197,13 @@ export function QuadrantsWsDebugPanel() {
             Debug-only test panel. Firebase gameplay is unchanged.
           </div>
         </div>
-        <div style={clientState.connected ? styles.badgeOnline : styles.badgeOffline}>
-          {clientState.connected ? "Connected" : "Disconnected"}
+        <div style={styles.headerActions}>
+          <div style={clientState.connected ? styles.badgeOnline : styles.badgeOffline}>
+            {clientState.connected ? "Connected" : "Disconnected"}
+          </div>
+          <button type="button" style={styles.headerButton} onClick={() => setHidden(true)} title="Hide debug panel">
+            Hide
+          </button>
         </div>
       </div>
 
@@ -307,6 +322,36 @@ const styles = {
     gap: 12,
     alignItems: "flex-start",
     marginBottom: 12
+  },
+  headerActions: {
+    display: "flex",
+    gap: 6,
+    alignItems: "center",
+    flexWrap: "wrap",
+    justifyContent: "flex-end"
+  },
+  headerButton: {
+    padding: "4px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(148, 163, 184, 0.35)",
+    background: "rgba(30, 41, 59, 0.95)",
+    color: "#e5e7eb",
+    cursor: "pointer"
+  },
+  showButton: {
+    position: "fixed",
+    right: 16,
+    bottom: 16,
+    zIndex: 9999,
+    padding: "8px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(148, 163, 184, 0.45)",
+    background: "rgba(15, 23, 42, 0.96)",
+    color: "#e5e7eb",
+    boxShadow: "0 12px 30px rgba(0, 0, 0, 0.35)",
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    fontSize: 13,
+    cursor: "pointer"
   },
   subtle: {
     color: "#94a3b8",
