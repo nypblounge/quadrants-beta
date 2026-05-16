@@ -4685,6 +4685,15 @@ function resyncVotePassed(lobby, now = Date.now()) {
   return resyncVoteSummary(lobby, now).passed;
 }
 
+function resyncVoteProcessorId(lobby, now = Date.now()) {
+  const votes = resyncVoteMap(lobby);
+  const eligibleYesPlayers = activeConnectedGamePlayers(lobby, now).filter((p) => votes[p.id] === true);
+  if (!eligibleYesPlayers.length) return null;
+  const avoidStaleHost = isFightSimStale(lobby, now) && lobby.hostId;
+  const candidates = avoidStaleHost ? eligibleYesPlayers.filter((p) => p.id !== lobby.hostId) : eligibleYesPlayers;
+  return (candidates.length ? candidates : eligibleYesPlayers).map((p) => p.id).sort()[0] || null;
+}
+
 function simTickAgeMs(lobby, now = Date.now()) {
   const lastTick = Number(lobby?.game?.lastSimTickAt || 0);
   return lastTick ? now - lastTick : 0;
@@ -6787,6 +6796,8 @@ export default function QuadrantsOnline() {
   const [hostKickSelectId, setHostKickSelectId] = useState("");
   const fightTickInFlightRef = useRef(false);
   const buyUnitPendingRef = useRef(false);
+  const resyncVoteProcessInFlightRef = useRef(false);
+  const resyncVoteProcessedAtRef = useRef(0);
   const latestLobbyRef = useRef(null);
 
   useEffect(() => {
@@ -6959,6 +6970,14 @@ export default function QuadrantsOnline() {
   }, [lobby?.hostId, lobby?.players, lobby?.phase, lobby?.game?.lastSimTickAt, lobby?.resyncVote, lobbyCode]);
 
   useEffect(() => {
+    if (!lobby || !lobbyCode || lobby.phase !== "fight") return;
+    const now = Date.now();
+    if (!resyncVotePassed(lobby, now)) return;
+    if (resyncVoteProcessorId(lobby, now) !== playerId) return;
+    processPassedResyncVote(lobby);
+  }, [lobby?.phase, lobby?.players, lobby?.resyncVote, lobby?.game?.lastSimTickAt, lobbyCode, playerId]);
+
+  useEffect(() => {
     if (!lobby || !lobbyCode || !isHost || lobby.phase !== "fight") return;
     fightTickInFlightRef.current = false;
     const interval = setInterval(async () => {
@@ -6972,20 +6991,10 @@ export default function QuadrantsOnline() {
         const latest = latestLobbyRef.current;
         if (!latest || latest.phase !== "fight" || latest.hostId !== playerId) return;
         const now = Date.now();
-      if (resyncVotePassed(latest, now)) {
-        const currentGame = latest.game || {};
-        await update(ref(db, `lobbies/${lobbyCode}`), {
-          resyncVote: {},
-          updatedAt: now,
-          lastActivityAt: now,
-          "game/lastSimTickAt": now,
-          "game/simTick": Number(currentGame.simTick || 0) + 1,
-          "game/splats": {},
-          "game/effects": {},
-          "game/log": [`Resync vote passed. ${latest.players?.[playerId]?.name || "Host"} refreshed the fight snapshot.`, ...(currentGame.log || [])].slice(0, 8),
-        });
-        return;
-      }
+        if (resyncVotePassed(latest, now)) {
+          await processPassedResyncVote(latest);
+          return;
+        }
       if (allVoteEndYes(latest)) {
         const results = summarizeResults(latest.game, "vote to end");
         await update(ref(db, `lobbies/${lobbyCode}`), {
@@ -8095,6 +8104,36 @@ export default function QuadrantsOnline() {
     await update(ref(db, `lobbies/${lobbyCode}/voteEnd`), { [playerId]: Boolean(value) });
   }
 
+  async function processPassedResyncVote(sourceLobby) {
+    if (!lobbyCode) return false;
+    const now = Date.now();
+    const latest = latestLobbyRef.current || sourceLobby;
+    if (!latest || latest.phase !== "fight") return false;
+    if (!resyncVotePassed(latest, now)) return false;
+    if (resyncVoteProcessorId(latest, now) !== playerId) return false;
+    const voteRequestedAt = Number(latest.resyncVote?.requestedAt || 0);
+    if (!voteRequestedAt || resyncVoteProcessedAtRef.current === voteRequestedAt) return false;
+    if (resyncVoteProcessInFlightRef.current) return false;
+    resyncVoteProcessInFlightRef.current = true;
+    try {
+      const currentGame = latest.game || {};
+      await update(ref(db, `lobbies/${lobbyCode}`), {
+        resyncVote: {},
+        updatedAt: now,
+        lastActivityAt: now,
+        "game/lastSimTickAt": now,
+        "game/simTick": Number(currentGame.simTick || 0) + 1,
+        "game/splats": {},
+        "game/effects": {},
+        "game/log": [`Resync vote passed. ${latest.players?.[playerId]?.name || player?.name || "Player"} refreshed the fight snapshot.`, ...(currentGame.log || [])].slice(0, 8),
+      });
+      resyncVoteProcessedAtRef.current = voteRequestedAt;
+      return true;
+    } finally {
+      resyncVoteProcessInFlightRef.current = false;
+    }
+  }
+
   async function toggleVoteResync(value) {
     if (!lobby || lobby.phase !== "fight") return;
     const now = Date.now();
@@ -8289,7 +8328,7 @@ export default function QuadrantsOnline() {
             {pendingManualTargetUnitId && <div className="manual-target-banner">Select target for {game?.units?.[pendingManualTargetUnitId]?.name || "unit"}: click an enemy unit to attack, a road/base tile to move, or a matching tree/rock to chop/mine.</div>}
             {fightLooksFrozen && (
               <div className="resync-warning-banner">
-                Fight simulation has not updated for {Math.floor(fightSimAge / 1000)}s. Vote to resync or wait for host migration. Votes: {resyncSummaryNow.yes}/{resyncSummaryNow.needed || "?"}
+                Fight simulation has not updated for {Math.floor(fightSimAge / 1000)}s. Vote to resync; when the vote passes, one voter will refresh the fight snapshot. Votes: {resyncSummaryNow.yes}/{resyncSummaryNow.needed || "?"}
               </div>
             )}
             <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={handleFightCellClick} onUnitClick={handleFightUnitClick} selectedUnitId={selectedUnitId} selectedResource={selectedResource} visualToggles={visualToggles} onGroundItemsContextMenu={openGroundItemsContextMenu} onBoardContextMenu={openBoardContextMenu} />
