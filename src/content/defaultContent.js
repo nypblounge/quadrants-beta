@@ -787,7 +787,7 @@ export const DEFAULT_NPCS = [
     "id": "callisto",
     "name": "Callisto",
     "icon": "290px-Callisto.png",
-    "size": 1,
+    "size": 2,
     "combatType": "melee",
     "hp": 1000,
     "baseDamage": 31,

@@ -1526,23 +1526,42 @@ function makeBoard(setup = DEFAULT_SETUP) {
   return applyOuterTreeWall(applyMapTemplate(board, setup), setup);
 }
 
-function finalizeBuildTerrain(board, setup = DEFAULT_SETUP) {
+function clusteredFinalizeTerrainType(cell, board, out, setup) {
   const choices = ["water", "tree", "rock"];
-  const size = sizeOf(setup);
-  return cloneBoard(board).map((row) => row.map((cell) => {
-    if (!cell || cell.type !== "empty") return cell;
-    if (isBaseCell(cell.row, cell.col, setup) || isCenterCell(cell.row, cell.col, setup)) return cell;
-    const picked = choices[Math.floor(Math.random() * choices.length)] || "water";
-    return {
-      ...cell,
-      type: picked,
-      resourceDeathCount: cell.resourceDeathCount ?? 0,
-      resourceHp: null,
-      resourceMaxHp: null,
-      regrowType: null,
-      regrowAt: null,
-    };
-  }));
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const row = Number(cell.row);
+  const col = Number(cell.col);
+  const neighbors = [];
+  for (const [dr, dc] of dirs) {
+    const nearby = out[row + dr]?.[col + dc] || board[row + dr]?.[col + dc];
+    if (choices.includes(nearby?.type)) neighbors.push(nearby.type);
+  }
+  const regularGroundChance = cell.owner === "void" ? 0.14 : 0.06;
+  if (Math.random() < regularGroundChance) return "road";
+  if (neighbors.length && Math.random() < 0.74) return neighbors[Math.floor(Math.random() * neighbors.length)];
+  return choices[Math.floor(Math.random() * choices.length)] || "water";
+}
+
+function finalizeBuildTerrain(board, setup = DEFAULT_SETUP) {
+  const out = cloneBoard(board);
+  for (let row = 0; row < out.length; row++) {
+    for (let col = 0; col < (out[row]?.length || 0); col++) {
+      const cell = out[row][col];
+      if (!cell || cell.type !== "empty") continue;
+      if (isBaseCell(cell.row, cell.col, setup) || isCenterCell(cell.row, cell.col, setup)) continue;
+      const picked = clusteredFinalizeTerrainType(cell, board, out, setup);
+      out[row][col] = {
+        ...cell,
+        type: picked,
+        resourceDeathCount: cell.resourceDeathCount ?? 0,
+        resourceHp: null,
+        resourceMaxHp: null,
+        regrowType: null,
+        regrowAt: null,
+      };
+    }
+  }
+  return out;
 }
 
 function makeBases(setup) {
@@ -1956,7 +1975,7 @@ function carveRoadPath(boardInput, setup, team) {
   const board = cloneBoard(boardInput);
   const size = sizeOf(setup);
   const base = baseOf(team, setup);
-  const preferredTarget = centerTargetCell(setup, base);
+  const center = centerTargetCell(setup, base); const radius = Math.floor(centerSizeFor(setup) / 2); const mid = midOf(size); const drift = () => Math.random() < 0.55 ? 0 : (Math.random() < 0.5 ? -1 : 1); const preferredTarget = { row: Math.max(mid - radius, Math.min(mid + radius, center.row + drift())), col: Math.max(mid - radius, Math.min(mid + radius, center.col + drift())) };
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   const canCarve = (r, c) => {
     if (!inBounds(r, c, size)) return false;
@@ -1994,8 +2013,8 @@ function carveRoadPath(boardInput, setup, team) {
       break;
     }
     const orderedDirs = dirs
-      .map(([dr, dc]) => ({ dr, dc, dist: Math.abs(cur.row + dr - preferredTarget.row) + Math.abs(cur.col + dc - preferredTarget.col) }))
-      .sort((a, b) => a.dist - b.dist);
+      .map(([dr, dc]) => ({ dr, dc, dist: Math.abs(cur.row + dr - preferredTarget.row) + Math.abs(cur.col + dc - preferredTarget.col), jitter: Math.random() }))
+      .sort((a, b) => (a.dist - b.dist) || (a.jitter - b.jitter));
     for (const { dr, dc } of orderedDirs) {
       const nr = cur.row + dr;
       const nc = cur.col + dc;
@@ -2016,7 +2035,7 @@ function carveRoadPath(boardInput, setup, team) {
       if (k === startKey) break;
       k = parent.get(k);
     }
-    path.reverse().forEach((tile) => paint(tile.row, tile.col));
+    path.reverse().forEach((tile) => { paint(tile.row, tile.col); if (Math.random() < 0.22) { const side = dirs[Math.floor(Math.random() * dirs.length)]; paint(tile.row + side[0], tile.col + side[1]); } });
     return board;
   }
 
@@ -2054,20 +2073,20 @@ function ensureCpuBuildPaths(gameInput, lobbyLike) {
   return { ...gameInput, board, log };
 }
 
-function makeCpuRosterForTeam(team, setup, existingUnits = []) {
+function makeCpuRosterForTeam(team, setup, existingUnits = [], availableGold = null) {
   if (!team) return [];
   const maxUnits = Math.max(1, Number(setup?.maxUnits || DEFAULT_SETUP.maxUnits));
-  const targetCount = Math.min(maxUnits, maxUnits >= 10 ? 8 : Math.max(4, maxUnits));
-  const preferred = ["melee", "range", "magic", "woodcutter", "miner", "melee", "range", "magic", "dinhs_bulwark", "heavy_ballista", "ancient_staff"];
+  const targetCount = Math.min(maxUnits, Math.max(3, Math.min(maxUnits, 3 + Math.floor(Math.random() * Math.max(2, maxUnits - 2)))));
+  const preferred = MINION_STYLE_IDS.filter((style) => STYLE[style] && !STYLE[style].npc && STYLE[style].buyable !== false).sort((a, b) => (Number(STYLE[b]?.cost || 0) - Number(STYLE[a]?.cost || 0)) * (0.35 + Math.random()) + (Math.random() - 0.5) * 120);
   const roster = [];
   const existingCount = existingUnits.filter((u) => u.team === team && u.team !== "npc").length;
-  let gold = Number(setup?.startingGold || DEFAULT_SETUP.startingGold);
+  let gold = Number(availableGold ?? setup?.startingGold ?? DEFAULT_SETUP.startingGold);
   for (const style of preferred) {
     if (existingCount + roster.length >= targetCount) break;
     const def = STYLE[style];
     if (!def || def.npc || !MINION_STYLE_IDS.includes(style)) continue;
     const cost = Number(def.cost || 0);
-    if (cost > gold && roster.length >= 3) continue;
+    if (cost > gold) continue;
     gold -= cost;
     const index = existingCount + roster.length + 1;
     roster.push(makeUnit(`cpu_${team}_${style}_${index}`, team, style, setup, {
@@ -2077,7 +2096,7 @@ function makeCpuRosterForTeam(team, setup, existingUnits = []) {
     }));
   }
   while (existingCount + roster.length < Math.min(3, maxUnits)) {
-    const style = ["melee", "range", "magic"][roster.length % 3];
+    const fallbackStyles = ["melee", "range", "magic"].filter((style) => Number(STYLE[style]?.cost || 0) <= gold); if (!fallbackStyles.length) break; const style = fallbackStyles[Math.floor(Math.random() * fallbackStyles.length)]; gold -= Number(STYLE[style]?.cost || 0);
     const index = existingCount + roster.length + 1;
     roster.push(makeUnit(`cpu_${team}_${style}_${index}`, team, style, setup, {
       name: `${TEAM_META[team]?.name || team} CPU ${STYLE[style]?.name || style}`,
@@ -2103,7 +2122,7 @@ function ensureCpuRosters(gameInput, lobbyLike) {
   for (const team of teams) {
     const existing = units.filter((u) => u.team === team);
     if (existing.length) continue;
-    const roster = makeCpuRosterForTeam(team, setup, units);
+    const roster = makeCpuRosterForTeam(team, setup, units, Number(gold[team] ?? setup.startingGold ?? DEFAULT_SETUP.startingGold));
     for (const unit of roster) units.push(unit);
     const spent = roster.reduce((sum, unit) => sum + Number(STYLE[unit.style]?.cost || 0), 0);
     gold[team] = Math.max(0, Number(gold[team] ?? setup.startingGold ?? DEFAULT_SETUP.startingGold) - spent);
@@ -4135,7 +4154,7 @@ function runDevTests() {
   console.assert(!isStarterRoad(15, 1, setup3), "Inactive fourth zone should not get a starter road patch");
   console.assert(!isBuildFogged(board3[15][1], "red", "build", setup3), "Inactive fourth zone should render as void instead of fogged enemy terrain");
   const finalized3 = finalizeBuildTerrain(board3, setup3);
-  console.assert(["water", "tree", "rock"].includes(finalized3[15][1].type), "Finalizing build should fill empty/void tiles with random water, trees, or rocks");
+  console.assert(["road", "water", "tree", "rock"].includes(finalized3[15][1].type), "Finalizing build should fill empty/void tiles with random water, trees, or rocks");
   console.assert(baseOf("red", 17).row === 1 && baseOf("red", 17).col === 1, "Red base should be centered in 3x3 top-left starter patch");
   console.assert(baseOf("green", 17).row === 1 && baseOf("green", 17).col === 15, "Green base should be centered in 3x3 top-right starter patch");
   console.assert(isInBaseZone(2, 2, "red", 17), "Red should have a 3x3 default base patch");
