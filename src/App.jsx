@@ -3689,7 +3689,7 @@ function stepGame(game, dt) {
     if (npc.team !== "npc" || npc.hp <= 0 || npc.cooldown > 0) return false;
 
     if (npc.style === "greendragon") {
-      const target = closestEnemyUnitInRange(board, units, npc, setup, combatTeams);
+      const target = closestEnemyUnitInRange(board, units, npc, setup, combatTeamsAtTickStart);
       if (!target || unitDistance(npc, target) > 1 || Math.random() >= 0.1) return false;
       const dragonfire = npcAttackOptions(npc).find((attack) => attack.special === "dragonfire") || { id: "dragonfire", name: "Dragonfire", combatType: "magic", attackRange: 1, baseDamage: styleDefinition(npc.style).baseDamage, maxMultiplier: 3, protectedMaxMultiplier: 1 };
       const result = resolveDragonfireHit(npc, target, dragonfire);
