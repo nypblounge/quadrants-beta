@@ -6779,7 +6779,7 @@ function TeamResults({ team, results, lobby }) {
 export default function QuadrantsOnline() {
   const [name, setName] = useState(localStorage.getItem("quadrants_player_name") || "");
   const [joinCode, setJoinCode] = useState("");
-  const [playerId] = useState(() => ensurePlayerId());
+  const [playerId, setPlayerId] = useState(() => ensurePlayerId());
   const [lobbyCode, setLobbyCode] = useState(localStorage.getItem("quadrants_lobby_code") || "");
   const [lobby, setLobby] = useState(null);
   const [status, setStatus] = useState("");
@@ -6954,7 +6954,7 @@ export default function QuadrantsOnline() {
     const now = Date.now();
     const host = lobby.players?.[lobby.hostId];
     const lastSeen = typeof host?.lastSeen === "number" ? host.lastSeen : 0;
-    const hostPresenceStale = !host || !host.connected || !lastSeen || now - lastSeen > 15000;
+    const hostPresenceStale = !host || !lastSeen || now - lastSeen > RECENT_PRESENCE_GRACE_MS;
     const votePassedAndHostTickStale = lobby.phase === "fight" && resyncVotePassed(lobby, now) && isFightSimStale(lobby, now, SIM_STALE_HOST_TAKEOVER_MS);
     if (!hostPresenceStale && !votePassedAndHostTickStale) return;
     const nextHost = chooseFallbackHost(lobby, now, true);
@@ -7169,32 +7169,57 @@ export default function QuadrantsOnline() {
       const cleanName = name.trim().slice(0, 18);
       const code = normalizeLobbyCode(joinCode);
       if (!cleanName || code.length !== 6) return;
-      localStorage.setItem("quadrants_player_name", cleanName);
-      const snap = await get(ref(db, `lobbies/${code}`));
+      localStorage.setItem('quadrants_player_name', cleanName);
+      const snap = await get(ref(db, 'lobbies/' + code));
       const existing = snap.val();
       if (!existing) {
-        setStatus("Lobby not found.");
+        setStatus('Lobby not found.');
         return;
       }
-      const openTeam = openTeamForLobby(existing);
+
       const now = Date.now();
+      const players = existing.players || {};
+      const nameKey = cleanName.toLowerCase();
+      const currentPlayer = players[playerId];
+      const reconnectEntry = currentPlayer
+        ? [playerId, currentPlayer]
+        : Object.entries(players).find(([candidateId, candidate]) => {
+            if (!candidate || isCpuPlayer({ ...candidate, id: candidateId })) return false;
+            if (String(candidate.name || '').trim().toLowerCase() !== nameKey) return false;
+            const lastSeen = typeof candidate.lastSeen === 'number' ? candidate.lastSeen : 0;
+            const recentlyActive = candidate.connected && lastSeen && now - lastSeen <= RECENT_PRESENCE_GRACE_MS;
+            return !recentlyActive;
+          });
+
+      const resolvedPlayerId = reconnectEntry?.[0] || playerId;
+      const existingPlayer = players[resolvedPlayerId] || {};
+      const openTeam = existingPlayer.team || openTeamForLobby(existing);
+
+      if (resolvedPlayerId !== playerId) {
+        localStorage.setItem('quadrants_player_id', resolvedPlayerId);
+        setPlayerId(resolvedPlayerId);
+      }
+
       await update(ref(db), {
-        [`lobbies/${code}/players/${playerId}`]: {
-          id: playerId,
+        ['lobbies/' + code + '/players/' + resolvedPlayerId]: {
+          ...existingPlayer,
+          id: resolvedPlayerId,
           name: cleanName,
-          team: existing.players?.[playerId]?.team || openTeam || null,
+          team: existingPlayer.team || openTeam || null,
           connected: true,
-          joinedAt: existing.players?.[playerId]?.joinedAt || now,
+          joinedAt: existingPlayer.joinedAt || now,
           lastSeen: now,
         },
-        [`lobbies/${code}/kicked/${playerId}`]: null,
+        ['lobbies/' + code + '/kicked/' + resolvedPlayerId]: null,
+        ['lobbies/' + code + '/lastActivityAt']: now,
       });
-      localStorage.setItem("quadrants_lobby_code", code);
+
+      localStorage.setItem('quadrants_lobby_code', code);
       setLobbyCode(code);
-      setStatus("");
+      setStatus(resolvedPlayerId !== playerId ? 'Reconnected to your previous player slot.' : '');
     } catch (err) {
       console.error(err);
-      setStatus(err.message || "Could not join lobby.");
+      setStatus(err.message || 'Could not join lobby.');
     }
   }
 
