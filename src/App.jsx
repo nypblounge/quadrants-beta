@@ -309,6 +309,7 @@ const STALE_LOBBY_CLEANUP_HOURS = 24;
 const RESULTS_LOBBY_CLEANUP_HOURS = 6;
 const LOBBY_CLEANUP_THROTTLE_MS = 5 * 60 * 1000;
 const RECENT_PRESENCE_GRACE_MS = 2 * 60 * 1000;
+const HOST_OVERRIDE_LOCK_MS = 2 * 60 * 1000;
 const LOBBY_CLEANUP_BATCH_LIMIT = 50;
 const SIM_STALE_WARNING_MS = 9000;
 const SIM_STALE_HOST_TAKEOVER_MS = 18000;
@@ -6857,6 +6858,7 @@ export default function QuadrantsOnline() {
     const lobbySegmentKeys = [
       "phase",
       "hostId",
+      "hostOverrideUntil",
       "createdAt",
       "updatedAt",
       "lastActivityAt",
@@ -6956,6 +6958,9 @@ export default function QuadrantsOnline() {
     const lastSeen = typeof host?.lastSeen === "number" ? host.lastSeen : 0;
     const hostPresenceStale = !host || !lastSeen || now - lastSeen > RECENT_PRESENCE_GRACE_MS;
     const votePassedAndHostTickStale = lobby.phase === "fight" && resyncVotePassed(lobby, now) && isFightSimStale(lobby, now, SIM_STALE_HOST_TAKEOVER_MS);
+    const hostOverrideUntil = Number(lobby.hostOverrideUntil || 0);
+    const hostOverrideActive = hostOverrideUntil && now < hostOverrideUntil;
+    if (hostOverrideActive && host && !votePassedAndHostTickStale) return;
     if (!hostPresenceStale && !votePassedAndHostTickStale) return;
     const nextHost = chooseFallbackHost(lobby, now, true);
     if (nextHost && lobby.hostId !== nextHost.id) {
@@ -6967,7 +6972,7 @@ export default function QuadrantsOnline() {
         "game/log": [reason, ...(lobby.game?.log || [])].slice(0, 8),
       });
     }
-  }, [lobby?.hostId, lobby?.players, lobby?.phase, lobby?.game?.lastSimTickAt, lobby?.resyncVote, lobbyCode]);
+  }, [lobby?.hostId, lobby?.hostOverrideUntil, lobby?.players, lobby?.phase, lobby?.game?.lastSimTickAt, lobby?.resyncVote, lobbyCode]);
 
   useEffect(() => {
     if (!lobby || !lobbyCode || lobby.phase !== "fight") return;
@@ -7388,7 +7393,9 @@ export default function QuadrantsOnline() {
     if (!target) return;
     await update(ref(db, `lobbies/${lobbyCode}`), {
       hostId: targetPlayerId,
+      hostOverrideUntil: Date.now() + HOST_OVERRIDE_LOCK_MS,
       updatedAt: Date.now(),
+      lastActivityAt: Date.now(),
       "game/log": [`${target.name || "A player"} is now host.`, ...(game?.log || [])].slice(0, 8),
     });
   }
