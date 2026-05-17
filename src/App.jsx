@@ -3068,8 +3068,10 @@ function resolveUnitHit(attacker, target) {
     grantXp(target, "defence", 1);
     return { damage: 0, hit: false };
   }
-  const dmg = applyUnitDamage(attacker, target, rollDamage(attacker, target.style), effectiveAttackStyleId(attacker));
-  return { damage: dmg, hit: true };
+  const maxHit = maxDamageRoll(attacker, target.style);
+  const rolledDamage = rollDamage(attacker, target.style);
+  const dmg = applyUnitDamage(attacker, target, rolledDamage, effectiveAttackStyleId(attacker));
+  return { damage: dmg, hit: true, maxHit, isMaxHit: rolledDamage >= maxHit };
 }
 
 function attackUnit(attacker, target) {
@@ -3522,10 +3524,10 @@ function stepGame(game, dt) {
     units.push(spawnedUnit);
   }
 
-  const addSplat = (target, dmg, team, style, label = null) => splats.push({ id: makeRuntimeId("s"), row: target.row, col: target.col, text: label ?? (dmg > 0 ? `-${dmg}` : "miss"), team, damageType: damageTypeClass(style), ttl: SPLAT_TTL });
+  const addSplat = (target, dmg, team, style, label = null, maxHit = false) => { const amount = Math.max(0, Math.round(Number(dmg ?? 0))); const normalizedLabel = label == null ? null : String(label).replace(/^-/, '').replace(/^miss$/i, '0'); const splatType = maxHit && amount > 0 ? 'max' : amount > 0 ? 'damage' : 'miss'; splats.push({ id: makeRuntimeId('s'), row: target.row, col: target.col, text: normalizedLabel ?? (amount > 0 ? String(amount) : '0'), amount, splatType, team, damageType: damageTypeClass(style), ttl: SPLAT_TTL }); };
   const addAttackSplats = (target, result, team, style) => {
     const rolls = result?.rolls || [{ damage: attackResultTotal(result), hit: attackResultTotal(result) > 0 }];
-    rolls.forEach((roll) => addSplat(target, roll.damage ?? 0, team, style, (roll.damage ?? 0) > 0 ? `-${roll.damage}` : result?.special ? "0" : "miss"));
+    rolls.forEach((roll) => addSplat(target, roll.damage ?? 0, team, style, (roll.damage ?? 0) > 0 ? String(roll.damage ?? 0) : '0', Boolean(roll.isMaxHit || ((roll.damage ?? 0) > 0 && roll.maxHit && (roll.damage ?? 0) >= roll.maxHit))));
   };
   const addEffect = (from, target, team, style) => effects.push({ id: makeRuntimeId("e"), fromRow: from.row, fromCol: from.col, row: target.row, col: target.col, team, style, ttl: 0.8 });
   const rollJadSpecialDamage = (jad, target, specialStyle) => {
@@ -5777,11 +5779,17 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                       <div className="owner-mark">{fogged ? "?" : String(cell.owner)[0]}</div>
                     </>
                   )}
-                  {showHitsplats && cellSplats.slice(-4).map((s, i) => (
-                    <div className={`splat splat-${s.damageType || "melee"}`} key={s.id} style={{ top: 5 + i * 14 }}>
-                      {s.text}
-                    </div>
-                  ))}
+                  {showHitsplats && cellSplats.slice(-8).map((s, i) => {
+                    const splatAmount = Number(s.amount ?? String(s.text ?? '0').replace(/[^0-9]/g, '')) || 0;
+                    const splatKind = s.splatType || (s.maxHit ? 'max' : splatAmount > 0 ? 'damage' : 'miss');
+                    const splatIcon = splatKind === 'max' ? 'Damage_hitsplat_(max_hit).png' : splatKind === 'miss' ? 'Zero_damage_hitsplat.png' : 'Damage_hitsplat.png';
+                    const splatText = String(s.text ?? '0').replace(/^-/, '').replace(/^miss$/i, '0');
+                    return (
+                      <div className={`splat splat-${s.damageType || 'melee'} splat-${splatKind} splat-pos-${i % 8}`} key={s.id} style={{ backgroundImage: `url(${asset('Hitsplats/' + splatIcon)})` }}>
+                        <span className='splat-text'>{splatText}</span>
+                      </div>
+                    );
+                  })}
                   <div className="cell-content">
                     {waterEdges.map((edge) => <span key={edge} className={`water-edge water-edge-${edge}`} />)}
                     {spawnIndicators.slice(-2).map((indicator) => {

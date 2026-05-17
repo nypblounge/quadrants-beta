@@ -3260,3 +3260,53 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .water-edge-left { top: 0; bottom: 0; left: 0; width: 4px; }
 .water-edge-right { top: 0; bottom: 0; right: 0; width: 4px; }
 .cell-content > .unit-token { z-index: 5; }
+
+/* OSRS icon hitsplats and seamless terrain joins */
+.board {
+  gap: 0 !important;
+}
+.board .cell {
+  border: 0 !important;
+  margin: 0 !important;
+  outline: 0 !important;
+  box-shadow: none;
+  background-clip: border-box;
+}
+@keyframes hitsplatIconFade {
+  0% { opacity: 0; transform: translate(var(--splat-x), var(--splat-y)) scale(.72); }
+  12% { opacity: 1; transform: translate(var(--splat-x), var(--splat-y)) scale(1.12); }
+  72% { opacity: 1; transform: translate(var(--splat-x), var(--splat-y)) scale(1); }
+  100% { opacity: 0; transform: translate(var(--splat-x), var(--splat-y)) scale(.92); }
+}
+.splat {
+  left: 50% !important;
+  top: 50% !important;
+  width: 34px !important;
+  height: 28px !important;
+  display: grid !important;
+  place-items: center !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 100% 100% !important;
+  color: #fff !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+  font-weight: 1000 !important;
+  font-family: Arial, Helvetica, sans-serif !important;
+  text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 2px 2px #000 !important;
+  image-rendering: pixelated;
+  animation: hitsplatIconFade 2.4s ease-out forwards !important;
+}
+.splat-text { transform: translateY(-1px); }
+.splat-pos-0 { --splat-x: -50%; --splat-y: calc(-50% - 36px); }
+.splat-pos-1 { --splat-x: calc(-50% + 30px); --splat-y: calc(-50% - 26px); }
+.splat-pos-2 { --splat-x: calc(-50% + 42px); --splat-y: -50%; }
+.splat-pos-3 { --splat-x: calc(-50% + 30px); --splat-y: calc(-50% + 26px); }
+.splat-pos-4 { --splat-x: -50%; --splat-y: calc(-50% + 36px); }
+.splat-pos-5 { --splat-x: calc(-50% - 30px); --splat-y: calc(-50% + 26px); }
+.splat-pos-6 { --splat-x: calc(-50% - 42px); --splat-y: -50%; }
+.splat-pos-7 { --splat-x: calc(-50% - 30px); --splat-y: calc(-50% - 26px); }
