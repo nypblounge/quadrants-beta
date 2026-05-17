@@ -4333,7 +4333,7 @@ function HpBar({ hp, max }) {
   );
 }
 
-function UnitTokenView({ unit, bump, showName = true }) {
+function UnitTokenView({ unit, bump, showName = true, visualOffset = null }) {
   const footprintSize = unitSize(unit);
   const hpPct = Math.max(0, Math.min(100, ((unit.hp ?? 0) / Math.max(1, maxHp(unit))) * 100));
   const teleporting = unit.targetOverride === "homeTeleport" && unit.homeTeleportStartedAt != null;
@@ -4347,8 +4347,12 @@ function UnitTokenView({ unit, bump, showName = true }) {
     borderColor: "transparent",
     background: `radial-gradient(circle at center, ${coreColor} 66%, transparent 68%), conic-gradient(#22c55e 0 ${hpPct}%, rgba(127,29,29,.95) ${hpPct}% 100%)`,
   };
+  const tokenStyle = {
+    ...(footprintSize > 1 ? { "--unit-size": footprintSize } : {}),
+    ...(visualOffset ? { "--move-x": visualOffset.x, "--move-y": visualOffset.y } : {}),
+  };
   return (
-    <div className={`unit-token unit-size-${footprintSize} ${footprintSize > 1 ? "large-unit" : ""} ${bump ? "bump" : ""} ${unit.team === "npc" ? "npc-unit" : ""}`} style={footprintSize > 1 ? { "--unit-size": footprintSize } : undefined} title={unit.name}>
+    <div className={["unit-token", "unit-size-" + footprintSize, footprintSize > 1 ? "large-unit" : "", bump ? "bump" : "", unit.team === "npc" ? "npc-unit" : "", visualOffset ? "unit-moving" : ""].filter(Boolean).join(" ")} style={tokenStyle} title={unit.name}>
       {overheadPrayer && <img className="unit-overhead-prayer" src={asset(overheadPrayer.icon)} alt={overheadPrayer.name} title={overheadPrayer.name} draggable={false} />}
       <div className={`unit-token-circle ${teleporting ? "teleporting" : ""} ${unit.team === "npc" ? "npc-token" : ""} ${isJad ? "jad-token" : ""}`} style={ringStyle}>
         {jadSpecialPct != null && (
@@ -4375,6 +4379,8 @@ const UnitToken = React.memo(UnitTokenView, (prev, next) => {
   const aTeleporting = a.targetOverride === "homeTeleport" && a.homeTeleportStartedAt != null;
   const bTeleporting = b.targetOverride === "homeTeleport" && b.homeTeleportStartedAt != null;
   return prev.bump === next.bump
+    && (prev.visualOffset?.x || 0) === (next.visualOffset?.x || 0)
+    && (prev.visualOffset?.y || 0) === (next.visualOffset?.y || 0)
     && prev.showName === next.showName
     && a.id === b.id
     && a.row === b.row
@@ -5471,6 +5477,24 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
   const effects = arrayFromObject(game.effects);
   const groundItems = groundItemsArray(game);
   const respawns = arrayFromObject(game.respawnQueue);
+  const previousUnitTilesRef = useRef(new Map());
+  const visualUnitOffsets = useMemo(() => {
+    const previous = previousUnitTilesRef.current;
+    const offsets = new Map();
+    for (const unit of units) {
+      const before = previous.get(unit.id);
+      if (!before || unit.hp <= 0) continue;
+      const rowDelta = before.row - unit.row;
+      const colDelta = before.col - unit.col;
+      if ((rowDelta || colDelta) && Math.abs(rowDelta) <= 1 && Math.abs(colDelta) <= 1) offsets.set(unit.id, { x: colDelta, y: rowDelta });
+    }
+    return offsets;
+  }, [game.units]);
+  useEffect(() => {
+    const next = new Map();
+    for (const unit of units) next.set(unit.id, { row: unit.row, col: unit.col });
+    previousUnitTilesRef.current = next;
+  }, [game.units]);
   const unitsByCell = useMemo(() => {
     const map = new Map();
     for (const unit of units) {
@@ -5780,7 +5804,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                     {targetHere && <div className="target-marker">🎯</div>}
                     {showResourceHp && <div className="resource-hpbar"><div className="resource-hpbar-fill" style={{ width: `${Math.max(0, Math.min(100, (resourceHp / resourceMax) * 100))}%` }} /></div>}
                     {cell.regrowType && !fogged && <div className="regrow-timer">{Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s</div>}
-                    {firstUnit && <UnitToken unit={{ ...firstUnit, currentFightTime: game.fightTime || 0 }} bump={cellEffects.length > 0} showName={showUnitNames} />}
+                    {firstUnit && <UnitToken unit={{ ...firstUnit, currentFightTime: game.fightTime || 0 }} visualOffset={visualUnitOffsets.get(firstUnit.id) || null} bump={cellEffects.length > 0} showName={showUnitNames} />}
                     {anchorUnits.length > 1 && <div className="stack-count">+{anchorUnits.length - 1}</div>}
                   </div>
                 </>

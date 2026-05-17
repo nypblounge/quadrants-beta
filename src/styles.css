@@ -3229,3 +3229,13 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   visibility: hidden;
   pointer-events: none;
 }
+
+/* render-only unit movement smoothing */
+.unit-token.unit-moving {
+  animation: unit-walk-smooth 220ms ease-out both;
+  will-change: transform;
+}
+@keyframes unit-walk-smooth {
+  from { transform: translate(calc(var(--move-x, 0) * 100%), calc(var(--move-y, 0) * 100%)); }
+  to { transform: translate(0, 0); }
+}
