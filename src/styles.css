@@ -3310,3 +3310,37 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .splat-pos-5 { --splat-x: calc(-50% - 30px); --splat-y: calc(-50% + 26px); }
 .splat-pos-6 { --splat-x: calc(-50% - 42px); --splat-y: -50%; }
 .splat-pos-7 { --splat-x: calc(-50% - 30px); --splat-y: calc(-50% - 26px); }
+
+
+/* v3.49 fixed board viewport */
+.board-wrap {
+  min-width: 0;
+  max-width: 100%;
+}
+.board-wrap.large-board {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.board-pan-scene {
+  width: max-content;
+  max-width: none;
+}
+.board {
+  width: max-content !important;
+  max-width: none !important;
+  grid-auto-rows: var(--tile-size, 39px);
+  flex: 0 0 auto;
+}
+.board .cell {
+  width: var(--tile-size, 39px);
+  height: var(--tile-size, 39px);
+  min-width: var(--tile-size, 39px);
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+}
+.fight-shell,
+.game-shell,
+.board-card {
+  min-width: 0;
+}

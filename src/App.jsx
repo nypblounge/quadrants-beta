@@ -5893,7 +5893,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
         <small>Scroll zoom • middle-drag or Shift+drag pan</small>
       </div>
       <div className="board-pan-scene" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
-        <div ref={boardRef} className="board" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
+        <div ref={boardRef} className="board" style={{ "--board-size": size, "--tile-size": `${largeBoard ? 39 : 41}px`, gridTemplateColumns: `repeat(${size}, var(--tile-size))` }}>
         {game.board.flat().map((cell) => {
           const baseTeam = baseTeamAt(cell.row, cell.col, setup);
           const rawCellUnits = unitsByCell.get(key(cell.row, cell.col)) || [];
