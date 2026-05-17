@@ -389,6 +389,87 @@ export const DEFAULT_ITEMS = [
       "meleeStrength": 4,
       "prayer": 2
     }
+  },
+  {
+    "slot": "none",
+    "twoHanded": false,
+    "shopForSale": false,
+    "shopStock": 0,
+    "consumable": "prayerXp",
+    "prayerXp": 15,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {},
+    "id": "dragonbones",
+    "name": "Dragon bones",
+    "type": "consumable",
+    "icon": "Dragon_bones.png",
+    "cost": 250,
+    "sellValue": 50,
+    "stackable": true
+  },
+  {
+    "slot": "none",
+    "twoHanded": false,
+    "shopForSale": false,
+    "shopStock": 0,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {},
+    "id": "voidwakerhilt",
+    "name": "Voidwaker hilt",
+    "type": "loot",
+    "icon": "Voidwaker_hilt.png",
+    "cost": 10000,
+    "sellValue": 5000,
+    "stackable": true
+  },
+  {
+    "slot": "ring",
+    "twoHanded": false,
+    "shopForSale": false,
+    "shopStock": 0,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "",
+    "bonuses": {
+      "crush": 4,
+      "defenceCrush": 4
+    },
+    "id": "tyrannicalring",
+    "name": "Tyrannical ring",
+    "type": "gear",
+    "icon": "Tyrannical_ring.png",
+    "cost": 2500,
+    "sellValue": 1250,
+    "stackable": false
+  },
+  {
+    "slot": "offHand",
+    "twoHanded": false,
+    "shopForSale": false,
+    "shopStock": 0,
+    "consumable": "",
+    "prayerXp": 0,
+    "effectKey": "",
+    "notes": "Protects against dragonbreath.",
+    "bonuses": {
+      "defenceStab": 2,
+      "defenceSlash": 3,
+      "defenceCrush": 3,
+      "defenceMagic": 1,
+      "defenceRange": 2
+    },
+    "id": "antidragonshield",
+    "name": "Anti-dragon shield",
+    "type": "gear",
+    "icon": "Anti-dragon_shield.png",
+    "cost": 1000,
+    "sellValue": 250,
+    "stackable": false
   }
 ];
 
@@ -618,6 +699,173 @@ export const DEFAULT_NPCS = [
         "chance": 1,
         "minQty": 1,
         "maxQty": 1
+      }
+    ]
+  },
+  {
+    "id": "greendragon",
+    "name": "Green dragon",
+    "icon": "290px-Green_dragon.png",
+    "size": 2,
+    "combatType": "melee",
+    "hp": 75,
+    "baseDamage": 8,
+    "attackSpeed": 6,
+    "attackRange": 1,
+    "spawnAmount": 1,
+    "spawnInterval": 90,
+    "maxAlive": 1,
+    "maxSpawns": 0,
+    "effectKey": "greendragon",
+    "notes": "Has a 1/10 melee-range dragonfire special. Anti-dragon shield blocks it; Protect from Magic reduces it to normal max hit.",
+    "stats": {
+      "attack": 68,
+      "strength": 68,
+      "defence": 68,
+      "magic": 68,
+      "range": 1,
+      "prayer": 1,
+      "hitpoints": 75
+    },
+    "attacks": [
+      {
+        "id": "claws",
+        "name": "Claws",
+        "combatType": "melee",
+        "baseDamage": 8,
+        "attackSpeed": 6,
+        "attackRange": 1
+      },
+      {
+        "id": "dragonfire",
+        "name": "Dragonfire",
+        "combatType": "magic",
+        "baseDamage": 8,
+        "attackSpeed": 6,
+        "attackRange": 1,
+        "special": "dragonfire",
+        "maxMultiplier": 3,
+        "protectedMaxMultiplier": 1
+      }
+    ],
+    "drops": [
+      {
+        "id": "drop_dragonbones",
+        "type": "item",
+        "itemId": "dragonbones",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_runelegs",
+        "type": "item",
+        "itemId": "runelegs",
+        "chance": 0.01,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_antidragonshield",
+        "type": "item",
+        "itemId": "antidragonshield",
+        "chance": 0.001,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_gold",
+        "type": "gold",
+        "itemId": "",
+        "chance": 0.1,
+        "minQty": 1,
+        "maxQty": 100
+      }
+    ]
+  },
+  {
+    "id": "callisto",
+    "name": "Callisto",
+    "icon": "290px-Callisto.png",
+    "size": 1,
+    "combatType": "melee",
+    "hp": 1000,
+    "baseDamage": 31,
+    "attackSpeed": 6,
+    "attackRange": 10,
+    "spawnAmount": 1,
+    "spawnInterval": 180,
+    "maxAlive": 1,
+    "maxSpawns": 0,
+    "effectKey": "callisto",
+    "notes": "Prefers melee against adjacent targets; otherwise uses ranged multi-target attacks within 10 tiles.",
+    "stats": {
+      "attack": 350,
+      "strength": 300,
+      "defence": 225,
+      "magic": 140,
+      "range": 200,
+      "prayer": 1,
+      "hitpoints": 1000
+    },
+    "attacks": [
+      {
+        "id": "maul",
+        "name": "Maul",
+        "combatType": "melee",
+        "baseDamage": 31,
+        "attackSpeed": 6,
+        "attackRange": 1
+      },
+      {
+        "id": "boulder",
+        "name": "Boulder throw",
+        "combatType": "range",
+        "baseDamage": 31,
+        "attackSpeed": 6,
+        "attackRange": 10
+      }
+    ],
+    "drops": [
+      {
+        "id": "drop_big_bones",
+        "type": "item",
+        "itemId": "big_bones",
+        "chance": 1,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_tyrannicalring",
+        "type": "item",
+        "itemId": "tyrannicalring",
+        "chance": 0.003,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_voidwakerhilt",
+        "type": "item",
+        "itemId": "voidwakerhilt",
+        "chance": 0.003,
+        "minQty": 1,
+        "maxQty": 1
+      },
+      {
+        "id": "drop_dragonbones",
+        "type": "item",
+        "itemId": "dragonbones",
+        "chance": 0.05,
+        "minQty": 1,
+        "maxQty": 4
+      },
+      {
+        "id": "drop_gold",
+        "type": "gold",
+        "itemId": "",
+        "chance": 0.1,
+        "minQty": 1,
+        "maxQty": 225
       }
     ]
   }

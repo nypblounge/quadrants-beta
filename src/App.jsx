@@ -750,6 +750,26 @@ function styleDefsFromContentPack(content = GAME_CONTENT_PACK) {
     const legacy = LEGACY_STYLE[id] || {};
     const attackTicks = Math.max(1, Math.round(Number(raw.attackSpeed ?? legacy.attackTicks ?? 4)));
     const hp = Math.max(1, Math.round(Number(raw.hp ?? raw.stats?.hitpoints ?? legacy.baseStats?.hitpoints ?? 30)));
+    const fallbackAttack = {
+      id: "primary",
+      name: raw.combatType || legacy.combatType || "melee",
+      combatType: raw.combatType || legacy.combatType || "melee",
+      baseDamage: Math.max(0, Math.round(Number(raw.baseDamage ?? legacy.baseDamage ?? 1))),
+      attackRange: Math.max(1, Math.round(Number(raw.attackRange ?? legacy.range ?? 1))),
+      attackSpeed: attackTicks,
+    };
+    const rawAttacks = Array.isArray(raw.attacks) ? raw.attacks : [];
+    const attacks = (rawAttacks.length ? rawAttacks : [fallbackAttack]).map((attack, index) => ({
+      id: cleanContentId(attack.id || attack.name || "attack_" + (index + 1)) || "attack_" + (index + 1),
+      name: String(attack.name || attack.id || "Attack " + (index + 1)).trim(),
+      combatType: attack.combatType || fallbackAttack.combatType,
+      baseDamage: Math.max(0, Math.round(Number(attack.baseDamage ?? fallbackAttack.baseDamage))),
+      attackRange: Math.max(1, Math.round(Number(attack.attackRange ?? attack.range ?? fallbackAttack.attackRange))),
+      attackSpeed: Math.max(1, Math.round(Number(attack.attackSpeed ?? attack.attackTicks ?? fallbackAttack.attackSpeed))),
+      special: attack.special || "",
+      maxMultiplier: attack.maxMultiplier == null ? undefined : Math.max(1, Number(attack.maxMultiplier) || 1),
+      protectedMaxMultiplier: attack.protectedMaxMultiplier == null ? undefined : Math.max(0, Number(attack.protectedMaxMultiplier) || 0),
+    }));
     out[id] = {
       ...legacy,
       name: raw.name || legacy.name || id,
@@ -763,6 +783,7 @@ function styleDefsFromContentPack(content = GAME_CONTENT_PACK) {
       attackTicks,
       cooldown: attackTicks * TICK_SECONDS,
       baseStats: { ...(legacy.baseStats || {}), ...(raw.stats || {}), hitpoints: hp },
+      attacks,
       npc: true,
       effectKey: raw.effectKey || legacy.effectKey || "",
     };
@@ -2843,10 +2864,122 @@ function rollDamage(attacker, defenderStyle) {
   return damage;
 }
 
+function attackTypeValue(value, fallback = "melee") {
+  const type = String(value || fallback).toLowerCase();
+  return ["melee", "range", "magic"].includes(type) ? type : fallback;
+}
+
+function offensiveStatForAttackType(type) {
+  return attackTypeValue(type) === "melee" ? "attack" : attackTypeValue(type);
+}
+
+function damageStatForAttackType(type) {
+  return attackTypeValue(type) === "melee" ? "strength" : attackTypeValue(type);
+}
+
+function normalizedNpcAttackOption(unit, option = {}) {
+  const style = styleDefinition(unit?.style);
+  const type = attackTypeValue(option.combatType || style.combatType);
+  return {
+    id: option.id || type,
+    name: option.name || type,
+    combatType: type,
+    baseDamage: Math.max(0, Math.round(Number(option.baseDamage ?? style.baseDamage ?? 1))),
+    attackRange: Math.max(1, Math.round(Number(option.attackRange ?? option.range ?? style.range ?? 1))),
+    attackSpeed: Math.max(1, Math.round(Number(option.attackSpeed ?? option.attackTicks ?? style.attackTicks ?? 4))),
+    special: option.special || "",
+    maxMultiplier: option.maxMultiplier == null ? undefined : Math.max(1, Number(option.maxMultiplier) || 1),
+    protectedMaxMultiplier: option.protectedMaxMultiplier == null ? undefined : Math.max(0, Number(option.protectedMaxMultiplier) || 0),
+  };
+}
+
+function npcAttackOptions(unit) {
+  const attacks = styleDefinition(unit?.style).attacks;
+  const list = Array.isArray(attacks) && attacks.length ? attacks : [{}];
+  return list.map((option) => normalizedNpcAttackOption(unit, option));
+}
+
+function npcAttackOptionMaxHit(attacker, target, option = {}) {
+  const attack = normalizedNpcAttackOption(attacker, option);
+  const adv = advantage(attack.combatType, target?.style);
+  const level = boostedStatLevel(attacker, damageStatForAttackType(attack.combatType), attack.combatType) + gearStrengthBonusFor(attacker, attack.combatType);
+  let maxHit = Math.max(1, Math.floor(attack.baseDamage * (0.65 + level / 100) * prayerDamageMultiplier(attacker, attack.combatType)));
+  if (adv === 1) maxHit = Math.ceil(maxHit * 1.1);
+  if (adv === -1) maxHit = Math.max(1, Math.floor(maxHit * 0.9));
+  return maxHit;
+}
+
+function rollNpcAttackOptionAccuracy(attacker, target, option = {}) {
+  const attack = normalizedNpcAttackOption(attacker, option);
+  const adv = advantage(attack.combatType, target?.style);
+  const offense = boostedStatLevel(attacker, offensiveStatForAttackType(attack.combatType), attack.combatType) + gearAttackBonusFor(attacker, attack.combatType);
+  const defence = boostedStatLevel(target, "defence", attack.combatType) + gearDefenceBonusFor(target, attack.combatType);
+  let chance = 0.55 + (offense - defence) / 190;
+  if (adv === 1) chance += 0.1;
+  if (adv === -1) chance -= 0.1;
+  chance = Math.max(0.05, Math.min(0.92, chance));
+  return Math.random() <= chance;
+}
+
+function resolveNpcAttackOptionHit(attacker, target, option = {}) {
+  const attack = normalizedNpcAttackOption(attacker, option);
+  target.lastAttackerId = attacker.id;
+  attacker.attacksAttempted = (attacker.attacksAttempted ?? 0) + 1;
+  if (target.hp <= 0) return { damage: 0, hit: false, overkill: true, attack };
+  if (!rollNpcAttackOptionAccuracy(attacker, target, attack)) {
+    attacker.misses = (attacker.misses ?? 0) + 1;
+    grantXp(target, "defence", 1);
+    return { damage: 0, hit: false, attack };
+  }
+  const maxHit = npcAttackOptionMaxHit(attacker, target, attack);
+  const rolledDamage = 1 + Math.floor(Math.random() * maxHit);
+  const dmg = applyUnitDamage(attacker, target, rolledDamage, attack.combatType);
+  return { damage: dmg, hit: dmg > 0, maxHit, isMaxHit: rolledDamage >= maxHit, attack };
+}
+
+function equippedItemIds(unit) {
+  return Object.values(unit?.equipment || {}).map((entry) => typeof entry === "string" ? entry : entry?.itemId || entry?.id || "").filter(Boolean).map((id) => cleanContentId(id));
+}
+
+function unitBuffKeys(unit) {
+  const sources = [unit?.buffs, unit?.activeBuffs, unit?.statusEffects, unit?.effects];
+  const keys = [];
+  for (const source of sources) {
+    if (!source) continue;
+    if (Array.isArray(source)) keys.push(...source.map((entry) => typeof entry === "string" ? entry : entry?.id || entry?.effectKey || entry?.name || ""));
+    else keys.push(...Object.keys(source));
+  }
+  return keys.map((key) => String(key || "").toLowerCase());
+}
+
+function hasAntiDragonProtection(unit) {
+  const ids = equippedItemIds(unit);
+  if (ids.includes("antidragonshield") || ids.includes("anti_dragon_shield")) return true;
+  for (const id of ids) {
+    const item = GEAR_ITEMS[id] || {};
+    const haystack = [id, item.effectKey || "", item.notes || "", item.name || ""].join(" ").toLowerCase();
+    if (haystack.includes("anti-dragon") || haystack.includes("antidragon") || haystack.includes("antifire") || haystack.includes("dragonfire")) return true;
+  }
+  return unitBuffKeys(unit).some((key) => key.includes("anti_dragon") || key.includes("antidragon") || key.includes("antifire") || key.includes("dragonfire_protect"));
+}
+
+function resolveDragonfireHit(attacker, target, option = {}) {
+  const attack = normalizedNpcAttackOption(attacker, { combatType: "magic", special: "dragonfire", maxMultiplier: 3, protectedMaxMultiplier: 1, ...option });
+  target.lastAttackerId = attacker.id;
+  attacker.attacksAttempted = (attacker.attacksAttempted ?? 0) + 1;
+  const normalMax = npcAttackOptionMaxHit(attacker, target, attack);
+  const blocked = hasAntiDragonProtection(target);
+  const magicPrayer = Boolean(protectionPrayerFor(target, "magic"));
+  const rawDamage = blocked ? 0 : normalMax * (magicPrayer ? (attack.protectedMaxMultiplier ?? 1) : (attack.maxMultiplier ?? 3));
+  const damage = applyUnitDamage(attacker, target, rawDamage, "dragonfire");
+  if (damage <= 0) attacker.misses = (attacker.misses ?? 0) + 1;
+  return { damage, hit: damage > 0, maxHit: rawDamage, isMaxHit: damage > 0, attack, dragonfire: true, blocked, magicPrayer };
+}
+
 function applyUnitDamage(attacker, target, dmg, attackStyle = effectiveAttackStyleId(attacker)) {
   const beforeHp = target.hp;
   let rawDamage = Math.max(0, dmg);
-  const protect = protectionPrayerFor(target, attackStyle);
+  const protect = attackStyle === "dragonfire" ? null : protectionPrayerFor(target, attackStyle);
   if (protect) rawDamage *= attacker?.team === "npc" ? 0 : 0.6;
   let damage = Math.min(target.hp, Math.max(0, Math.floor(rawDamage)));
   target.hp -= damage;
@@ -3552,6 +3685,53 @@ function stepGame(game, dt) {
     unit.pendingGoldReward = 0;
     unit.lastKill = null;
   };
+  const processNpcSpecialAttack = (npc) => {
+    if (npc.team !== "npc" || npc.hp <= 0 || npc.cooldown > 0) return false;
+
+    if (npc.style === "greendragon") {
+      const target = closestEnemyUnitInRange(board, units, npc, setup, combatTeams);
+      if (!target || unitDistance(npc, target) > 1 || Math.random() >= 0.1) return false;
+      const dragonfire = npcAttackOptions(npc).find((attack) => attack.special === "dragonfire") || { id: "dragonfire", name: "Dragonfire", combatType: "magic", attackRange: 1, baseDamage: styleDefinition(npc.style).baseDamage, maxMultiplier: 3, protectedMaxMultiplier: 1 };
+      const result = resolveDragonfireHit(npc, target, dragonfire);
+      target.lastAttackedAt = fightTime;
+      handleUnitLastKill(npc);
+      addSplat(target, result.damage || 0, npc.team, "magic", result.damage > 0 ? String(result.damage) : "0", result.isMaxHit);
+      addEffect(npc, target, npc.team, "magic");
+      const protectionText = result.blocked ? " and it was blocked" : result.magicPrayer ? " through Protect from Magic" : "";
+      killFeed = [{ id: makeRuntimeId("feed"), text: (npc.name || "Green dragon") + " breathed dragonfire at " + target.name + protectionText + ".", team: "npc", style: "magic", time: fightTime }, ...killFeed].slice(0, 30);
+      npc.cooldown = Math.max(1, dragonfire.attackSpeed || styleDefinition(npc.style).attackTicks || 4) * TICK_SECONDS;
+      return true;
+    }
+
+    if (npc.style === "callisto") {
+      const attacks = npcAttackOptions(npc);
+      const meleeAttack = attacks.find((attack) => attack.combatType === "melee") || { id: "melee", name: "Melee", combatType: "melee", attackRange: 1, baseDamage: styleDefinition(npc.style).baseDamage };
+      const rangeAttack = attacks.find((attack) => attack.combatType === "range") || { id: "range", name: "Ranged shockwave", combatType: "range", attackRange: 10, baseDamage: styleDefinition(npc.style).baseDamage };
+      const melee = normalizedNpcAttackOption(npc, { ...meleeAttack, attackRange: 1 });
+      const ranged = normalizedNpcAttackOption(npc, { ...rangeAttack, attackRange: Math.max(10, rangeAttack.attackRange || 10) });
+      const meleeTargets = units.filter((target) => target.hp > 0 && areHostileTeams(npc.team, target.team, setup) && activeTeams(setup).includes(target.team) && canAttack(board, npc, target, melee.attackRange, setup));
+      const attack = meleeTargets.length ? melee : ranged;
+      const targets = meleeTargets.length ? meleeTargets : units.filter((target) => {
+        if (target.hp <= 0 || !areHostileTeams(npc.team, target.team, setup) || !activeTeams(setup).includes(target.team)) return false;
+        if (unitDistance(npc, target) > attack.attackRange) return false;
+        return lineClear(board, npc, nearestTargetCell(npc, target), setup);
+      });
+      if (!targets.length) return false;
+      for (const target of targets) {
+        const result = resolveNpcAttackOptionHit(npc, target, attack);
+        target.lastAttackedAt = fightTime;
+        handleUnitLastKill(npc);
+        addSplat(target, result.damage || 0, npc.team, attack.combatType, result.damage > 0 ? String(result.damage) : "0", result.isMaxHit);
+        addEffect(npc, target, npc.team, attack.combatType);
+      }
+      killFeed = [{ id: makeRuntimeId("feed"), text: (npc.name || "Callisto") + " used " + (attack.combatType === "melee" ? "melee" : "ranged") + " on " + targets.length + " target" + (targets.length === 1 ? "" : "s") + ".", team: "npc", style: attack.combatType, time: fightTime }, ...killFeed].slice(0, 30);
+      npc.cooldown = Math.max(1, attack.attackSpeed || styleDefinition(npc.style).attackTicks || 4) * TICK_SECONDS;
+      return true;
+    }
+
+    return false;
+  };
+
   const processJadSpecial = (jad) => {
     if (jad.style !== "tz_tok_jad" || jad.team !== "npc" || jad.hp <= 0) return;
     if (jad.jadNextSpecialAt == null) jad.jadNextSpecialAt = fightTime + JAD_SPECIAL_INTERVAL;
@@ -3842,6 +4022,8 @@ function stepGame(game, dt) {
         continue;
       }
     }
+
+    if (processNpcSpecialAttack(unit)) continue;
 
     nearbyEnemyUnit = manualAttackTarget ?? closestEnemyUnitInRange(board, units, unit, setup, combatTeams);
     if (nearbyEnemyUnit && unit.cooldown <= 0) {

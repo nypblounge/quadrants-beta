@@ -91,11 +91,50 @@ function normalizeStatBlock(stats = {}, hpFallback = 75) {
   return out;
 }
 
+function normalizeNpcAttack(attack = {}, index = 0, fallback = {}) {
+  const fallbackId = "attack_" + (index + 1);
+  const combatType = UNIT_COMBAT_TYPES.includes(attack.combatType) ? attack.combatType : (fallback.combatType || "melee");
+  const id = cleanId(attack.id || attack.name || fallbackId) || fallbackId;
+  return {
+    id,
+    name: String(attack.name || fallback.name || id || ("Attack " + (index + 1))).trim(),
+    combatType,
+    baseDamage: Math.max(0, Math.round(numberValue(attack.baseDamage, fallback.baseDamage ?? 1))),
+    attackSpeed: Math.max(1, Math.round(numberValue(attack.attackSpeed ?? attack.attackTicks, fallback.attackSpeed ?? 4))),
+    attackRange: Math.max(1, Math.round(numberValue(attack.attackRange ?? attack.range, fallback.attackRange ?? 1))),
+    special: String(attack.special || "").trim(),
+    maxMultiplier: attack.maxMultiplier === "" || attack.maxMultiplier == null ? "" : Math.max(1, numberValue(attack.maxMultiplier, 1)),
+    protectedMaxMultiplier: attack.protectedMaxMultiplier === "" || attack.protectedMaxMultiplier == null ? "" : Math.max(0, numberValue(attack.protectedMaxMultiplier, 0)),
+  };
+}
+
+function normalizeNpcAttacks(attacks = [], fallback = {}) {
+  const list = Array.isArray(attacks) && attacks.length ? attacks : [fallback];
+  return list.map((attack, index) => normalizeNpcAttack(attack, index, fallback));
+}
+
+function estimatedNpcAttackMaxHit(npc = {}, attack = {}) {
+  const type = UNIT_COMBAT_TYPES.includes(attack.combatType) ? attack.combatType : (npc.combatType || "melee");
+  const statKey = type === "melee" ? "strength" : type;
+  const statLevel = Math.max(1, numberValue(npc.stats?.[statKey], 1));
+  const baseDamage = Math.max(0, numberValue(attack.baseDamage ?? npc.baseDamage, 1));
+  return Math.max(1, Math.floor(baseDamage * (0.65 + statLevel / 100)));
+}
+
+function dragonfireMaxSummary(npc = {}, attack = {}) {
+  const normalMax = estimatedNpcAttackMaxHit(npc, attack);
+  const unprotected = Math.floor(normalMax * numberValue(attack.maxMultiplier || 3, 3));
+  const protectedMagic = Math.floor(normalMax * numberValue(attack.protectedMaxMultiplier || 1, 1));
+  return " unprotected dragonfire " + unprotected + " / Protect Magic " + protectedMagic + " / anti-dragon 0";
+}
+
 function normalizeNpc(npc) {
   const id = cleanId(npc.id || npc.name || "new_npc");
   const hp = Math.max(1, Math.round(numberValue(npc.hp, npc.stats?.hitpoints || 30)));
   const stats = normalizeStatBlock(npc.stats || {}, hp);
   stats.hitpoints = hp;
+  const fallbackAttack = { id: "primary", name: npc.combatType || "melee", combatType: npc.combatType || "melee", baseDamage: Math.max(0, Math.round(numberValue(npc.baseDamage, 1))), attackSpeed: Math.max(1, Math.round(numberValue(npc.attackSpeed, 4))), attackRange: Math.max(1, Math.round(numberValue(npc.attackRange, 1))) };
+  const attacks = normalizeNpcAttacks(npc.attacks, fallbackAttack);
   return {
     id,
     name: String(npc.name || id || "New NPC").trim(),
@@ -113,6 +152,7 @@ function normalizeNpc(npc) {
     effectKey: String(npc.effectKey || "").trim(),
     notes: String(npc.notes || "").trim(),
     stats,
+    attacks,
     drops: (npc.drops || []).map(normalizeDrop),
   };
 }
@@ -444,6 +484,36 @@ function ContentManager({ onBack }) {
     updateNpc(npc.id, { drops: (npc.drops || []).filter((_, index) => index !== dropIndex) });
   }
 
+  function npcAttackFallback(source = npc) {
+    return { id: 'primary', name: source?.combatType || 'melee', combatType: source?.combatType || 'melee', baseDamage: source?.baseDamage ?? 1, attackSpeed: source?.attackSpeed ?? 4, attackRange: source?.attackRange ?? 1 };
+  }
+
+  function npcAttacksForEditor() {
+    return normalizeNpcAttacks(npc?.attacks, npcAttackFallback());
+  }
+
+  function updateNpcAttack(attackIndex, patch) {
+    if (!npc) return;
+    const attacks = npcAttacksForEditor().map((attack, index) => index === attackIndex ? normalizeNpcAttack({ ...attack, ...patch }, index, attack) : attack);
+    const primary = attacks[0] || npcAttackFallback();
+    updateNpc(npc.id, { attacks, combatType: primary.combatType, baseDamage: primary.baseDamage, attackSpeed: primary.attackSpeed, attackRange: primary.attackRange });
+  }
+
+  function addNpcAttack() {
+    if (!npc) return;
+    const attacks = npcAttacksForEditor();
+    const next = normalizeNpcAttack({ id: 'attack_' + (attacks.length + 1), name: 'New attack', combatType: npc.combatType || 'melee', baseDamage: npc.baseDamage || 1, attackSpeed: npc.attackSpeed || 4, attackRange: npc.attackRange || 1 }, attacks.length, npcAttackFallback());
+    updateNpc(npc.id, { attacks: [...attacks, next] });
+  }
+
+  function deleteNpcAttack(attackIndex) {
+    if (!npc) return;
+    const attacks = npcAttacksForEditor().filter((_, index) => index !== attackIndex);
+    if (!attacks.length) return;
+    const primary = attacks[0];
+    updateNpc(npc.id, { attacks, combatType: primary.combatType, baseDamage: primary.baseDamage, attackSpeed: primary.attackSpeed, attackRange: primary.attackRange });
+  }
+
   function importJson() {
     try {
       const parsed = JSON.parse(importText);
@@ -670,9 +740,29 @@ function ContentManager({ onBack }) {
                       <Field key={key} label={key}><NumberInput value={npc.stats?.[key] || 1} min={1} onChange={(value) => updateNpc(npc.id, { stats: { ...(npc.stats || {}), [key]: value }, ...(key === "hitpoints" ? { hp: value } : {}) })} /></Field>
                     ))}
                   </div>
-                  <div className="content-editor-header spaced">
+                  <div className='content-editor-header spaced'>
+                    <h3>NPC attacks</h3>
+                    <button className='btn' onClick={addNpcAttack}>Add attack</button>
+                  </div>
+                  <div className='loot-drop-table'>
+                    {npcAttacksForEditor().map((attack, index) => (
+                      <div key={attack.id + '-' + index} className='loot-drop-row'>
+                        <Field label='Name'><input value={attack.name} onChange={(e) => updateNpcAttack(index, { name: e.target.value })} /></Field>
+                        <Field label='Type'><select value={attack.combatType} onChange={(e) => updateNpcAttack(index, { combatType: e.target.value })}>{UNIT_COMBAT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></Field>
+                        <Field label='Base damage'><NumberInput value={attack.baseDamage} min={0} onChange={(value) => updateNpcAttack(index, { baseDamage: value })} /></Field>
+                        <Field label='Attack speed'><NumberInput value={attack.attackSpeed} min={1} onChange={(value) => updateNpcAttack(index, { attackSpeed: value })} /></Field>
+                        <Field label='Range'><NumberInput value={attack.attackRange} min={1} onChange={(value) => updateNpcAttack(index, { attackRange: value })} /></Field>
+                        <Field label='Special'><input value={attack.special || ''} onChange={(e) => updateNpcAttack(index, { special: e.target.value })} placeholder='dragonfire' /></Field>
+                        <Field label='Max multiplier'><NumberInput value={attack.maxMultiplier || 1} min={1} onChange={(value) => updateNpcAttack(index, { maxMultiplier: value })} /></Field>
+                        <Field label='Protected max'><NumberInput value={attack.protectedMaxMultiplier || 0} min={0} onChange={(value) => updateNpcAttack(index, { protectedMaxMultiplier: value })} /></Field>
+                        <small>Estimated max hit: <b>{estimatedNpcAttackMaxHit(npc, attack)}</b>{attack.special === 'dragonfire' ? dragonfireMaxSummary(npc, attack) : ''}</small>
+                        <button className='btn' disabled={npcAttacksForEditor().length <= 1} onClick={() => deleteNpcAttack(index)}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className='content-editor-header spaced'>
                     <h3>Loot table</h3>
-                    <button className="btn" onClick={addNpcDrop}>Add drop</button>
+                    <button className='btn' onClick={addNpcDrop}>Add drop</button>
                   </div>
                   <div className="loot-drop-table">
                     {(npc.drops || []).map((drop, index) => (
@@ -702,8 +792,8 @@ function ContentManager({ onBack }) {
               <div className="content-info-box"><b>{validation.length}</b><span>warnings</span></div>
             </div>
             <div className="content-warning-box">
-              <h3>Firebase usage note</h3>
-              <p>Keep definitions and images as static files in the repo. During matches, Firebase should store compact fields like <code>itemId</code>, <code>unitId/style</code>, <code>npcId</code>, quantities, HP, and positions instead of full images or full definitions.</p>
+              <h3>Content pack note</h3>
+              <p>Definitions and images stay as static repo files. Exported JSON/JS now supports NPC attack arrays for bosses and special attacks.</p>
             </div>
             <div className="content-warning-box">
               <h3>Testing local changes</h3>
