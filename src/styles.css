@@ -3232,10 +3232,31 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 
 /* render-only unit movement smoothing */
 .unit-token.unit-moving {
-  animation: unit-walk-smooth 220ms ease-out both;
+  animation: unit-walk-smooth 360ms ease-out both;
   will-change: transform;
 }
 @keyframes unit-walk-smooth {
   from { transform: translate(calc(var(--move-x, 0) * 100%), calc(var(--move-y, 0) * 100%)); }
   to { transform: translate(0, 0); }
 }
+
+.board .cell:has(.unit-moving), .board .cell.moving-unit-cell {
+  z-index: 220 !important;
+}
+.unit-token.unit-moving {
+  position: relative;
+  z-index: 221;
+}
+
+.water-edge {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  background: rgba(216, 247, 255, .44);
+  box-shadow: 0 0 7px rgba(125, 211, 252, .35);
+}
+.water-edge-top { top: 0; left: 0; right: 0; height: 4px; }
+.water-edge-bottom { bottom: 0; left: 0; right: 0; height: 4px; }
+.water-edge-left { top: 0; bottom: 0; left: 0; width: 4px; }
+.water-edge-right { top: 0; bottom: 0; right: 0; width: 4px; }
+.cell-content > .unit-token { z-index: 5; }

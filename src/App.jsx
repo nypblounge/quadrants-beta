@@ -861,11 +861,11 @@ const TILE = {
 
 const TILE_STYLE = {
   empty: { background: "#050505" },
-  road: { backgroundImage: `url("${asset("Dirt/soil-none-5i4x9p.jpg")}")` },
-  water: { backgroundImage: `url("${asset("Water/14024944-water-seamless-texture-tile.jpg")}")` },
+  road: { backgroundImage: `url("${asset("quadrants-terrain-tiles/terrain_dirt.png")}")` },
+  water: { backgroundImage: `url("${asset("quadrants-terrain-tiles/d2fkohg-a9cb2f71-32f1-45f0-8c4b-68c91c283582.gif")}")` },
   wall: { backgroundImage: `url("${asset("Stone/b3704317a3d3210d9d69146db415a39b.jpg")}")` },
-  tree: { backgroundImage: `linear-gradient(rgba(6, 78, 59, .2), rgba(20, 83, 45, .35)), url("${asset("Dirt/soil-none-5i4x9p.jpg")}")` },
-  rock: { backgroundImage: `linear-gradient(rgba(68, 64, 60, .28), rgba(41, 37, 36, .5)), url("${asset("Dirt/soil-none-5i4x9p.jpg")}")` },
+  tree: { backgroundImage: `linear-gradient(rgba(6, 78, 59, .12), rgba(20, 83, 45, .22)), url("${asset("quadrants-terrain-tiles/terrain_grass.png")}")` },
+  rock: { backgroundImage: `linear-gradient(rgba(68, 64, 60, .22), rgba(41, 37, 36, .42)), url("${asset("quadrants-terrain-tiles/terrain_dirt.png")}")` },
 };
 
 const FOG_STYLE = {
@@ -5727,8 +5727,10 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const buildHidden = buildLimited && !buildVisible;
           const fogged = !buildHidden && isBuildFogged(cell, activeTeam, lobby.phase, setup);
           const visibleType = buildHidden || fogged ? "empty" : cell.type;
+          const waterEdges = visibleType === "water" ? [             game.board?.[cell.row - 1]?.[cell.col]?.type !== "water" ? "top" : null,             game.board?.[cell.row + 1]?.[cell.col]?.type !== "water" ? "bottom" : null,             game.board?.[cell.row]?.[cell.col - 1]?.type !== "water" ? "left" : null,             game.board?.[cell.row]?.[cell.col + 1]?.type !== "water" ? "right" : null,           ].filter(Boolean) : [];
           const hiddenUnused = buildHidden || (lobby.phase !== "build" && visibleType === "empty" && !baseTeam && cellUnits.length === 0);
           const firstUnit = buildHidden ? null : anchorUnits[0];
+          const firstUnitVisualOffset = firstUnit ? visualUnitOffsets.get(firstUnit.id) || null : null;
           const largeUnitAnchor = Boolean(firstUnit && unitSize(firstUnit) > 1);
           const targetUnit = buildHidden ? null : cellUnits[0];
           const style = buildHidden ? {} : (fogged ? FOG_STYLE : TILE_STYLE[visibleType] || TILE_STYLE.empty);
@@ -5763,7 +5765,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                   onGroundItemsContextMenu(e, cellGroundItems, cell);
                 }
               }}
-              className={`cell ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
+              className={`cell ${firstUnitVisualOffset ? "moving-unit-cell" : ""} ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
               style={style}
               title={title}
             >
@@ -5781,6 +5783,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                     </div>
                   ))}
                   <div className="cell-content">
+                    {waterEdges.map((edge) => <span key={edge} className={`water-edge water-edge-${edge}`} />)}
                     {spawnIndicators.slice(-2).map((indicator) => {
                       const spawnSize = Math.max(1, unitSize(indicator));
                       return (
@@ -5804,7 +5807,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                     {targetHere && <div className="target-marker">🎯</div>}
                     {showResourceHp && <div className="resource-hpbar"><div className="resource-hpbar-fill" style={{ width: `${Math.max(0, Math.min(100, (resourceHp / resourceMax) * 100))}%` }} /></div>}
                     {cell.regrowType && !fogged && <div className="regrow-timer">{Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s</div>}
-                    {firstUnit && <UnitToken unit={{ ...firstUnit, currentFightTime: game.fightTime || 0 }} visualOffset={visualUnitOffsets.get(firstUnit.id) || null} bump={cellEffects.length > 0} showName={showUnitNames} />}
+                    {firstUnit && <UnitToken unit={{ ...firstUnit, currentFightTime: game.fightTime || 0 }} visualOffset={firstUnitVisualOffset} bump={cellEffects.length > 0} showName={showUnitNames} />}
                     {anchorUnits.length > 1 && <div className="stack-count">+{anchorUnits.length - 1}</div>}
                   </div>
                 </>
