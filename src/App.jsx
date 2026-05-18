@@ -4572,10 +4572,16 @@ function UnitTokenView({ unit, bump, showName = true, visualOffset = null }) {
   };
   const tokenStyle = {
     ...(footprintSize > 1 ? { "--unit-size": footprintSize } : {}),
-    ...(visualOffset ? { "--move-x": visualOffset.x, "--move-y": visualOffset.y, "--move-duration": visualOffset.durationMs ? String(Math.round(visualOffset.durationMs)) + "ms" : undefined } : {}),
+    ...(visualOffset ? {
+      "--move-x": visualOffset.x,
+      "--move-y": visualOffset.y,
+      "--move-duration": visualOffset.durationMs ? String(Math.round(visualOffset.durationMs)) + "ms" : undefined,
+      "--move-via-x": visualOffset.viaX ?? 0,
+      "--move-via-y": visualOffset.viaY ?? 0,
+    } : {}),
   };
   return (
-    <div className={["unit-token", "unit-size-" + footprintSize, footprintSize > 1 ? "large-unit" : "", bump ? "bump" : "", unit.team === "npc" ? "npc-unit" : "", visualOffset ? "unit-moving" : ""].filter(Boolean).join(" ")} style={tokenStyle} title={unit.name}>
+    <div className={["unit-token", "unit-size-" + footprintSize, footprintSize > 1 ? "large-unit" : "", bump ? "bump" : "", unit.team === "npc" ? "npc-unit" : "", visualOffset ? "unit-moving" : "", visualOffset?.viaX != null || visualOffset?.viaY != null ? "unit-moving-turn" : ""].filter(Boolean).join(" ")} style={tokenStyle} title={unit.name}>
       {overheadPrayer && <img className="unit-overhead-prayer" src={asset(overheadPrayer.icon)} alt={overheadPrayer.name} title={overheadPrayer.name} draggable={false} />}
       <div className={`unit-token-circle ${teleporting ? "teleporting" : ""} ${unit.team === "npc" ? "npc-token" : ""} ${isJad ? "jad-token" : ""}`} style={ringStyle}>
         {jadSpecialPct != null && (
@@ -4605,6 +4611,8 @@ const UnitToken = React.memo(UnitTokenView, (prev, next) => {
     && (prev.visualOffset?.x || 0) === (next.visualOffset?.x || 0)
     && (prev.visualOffset?.y || 0) === (next.visualOffset?.y || 0)
     && (prev.visualOffset?.durationMs || 0) === (next.visualOffset?.durationMs || 0)
+    && (prev.visualOffset?.viaX || 0) === (next.visualOffset?.viaX || 0)
+    && (prev.visualOffset?.viaY || 0) === (next.visualOffset?.viaY || 0)
     && prev.showName === next.showName
     && a.id === b.id
     && a.row === b.row
@@ -5713,6 +5721,15 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     const positionAt = (motion) => {
       if (!motion) return null;
       const pct = Math.max(0, Math.min(1, (now - motion.startedAt) / Math.max(1, motion.durationMs || 740)));
+      if (motion.viaRow != null && motion.viaCol != null) {
+        const viaPct = Math.max(0.2, Math.min(0.75, motion.viaPct || 0.42));
+        if (pct <= viaPct) {
+          const local = pct / viaPct;
+          return { row: motion.fromRow + (motion.viaRow - motion.fromRow) * local, col: motion.fromCol + (motion.viaCol - motion.fromCol) * local };
+        }
+        const local = (pct - viaPct) / Math.max(0.001, 1 - viaPct);
+        return { row: motion.viaRow + (motion.toRow - motion.viaRow) * local, col: motion.viaCol + (motion.toCol - motion.viaCol) * local };
+      }
       return { row: motion.fromRow + (motion.toRow - motion.fromRow) * pct, col: motion.fromCol + (motion.toCol - motion.fromCol) * pct };
     };
     for (const unit of units) {
@@ -5735,11 +5752,25 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
       const pos = positionAt(oldMotion) || before;
       const x = pos.col - unit.col;
       const y = pos.row - unit.row;
-      const distance = Math.max(0.001, Math.hypot(x, y));
-      const durationMs = Math.max(160, Math.min(980, Math.round(distance * 780)));
-      if (Math.abs(x) <= 2.2 && Math.abs(y) <= 2.2) {
-        offsets.set(unit.id, { x, y, durationMs });
-        nextMotions.set(unit.id, { fromRow: pos.row, fromCol: pos.col, toRow: unit.row, toCol: unit.col, startedAt: now, durationMs });
+      const stepRow = unit.row - before.row;
+      const stepCol = unit.col - before.col;
+      const adjacentStep = Math.abs(stepRow) + Math.abs(stepCol) === 1;
+      const wasMovingToBefore = oldMotion && oldMotion.toRow === before.row && oldMotion.toCol === before.col;
+      const prevStepRow = wasMovingToBefore ? before.row - oldMotion.fromRow : 0;
+      const prevStepCol = wasMovingToBefore ? before.col - oldMotion.fromCol : 0;
+      const changedDirection = wasMovingToBefore && (Math.sign(prevStepRow) !== Math.sign(stepRow) || Math.sign(prevStepCol) !== Math.sign(stepCol));
+      const needsVia = adjacentStep && changedDirection && (Math.abs(pos.row - before.row) > 0.02 || Math.abs(pos.col - before.col) > 0.02);
+      const directDistance = Math.max(0.001, Math.hypot(x, y));
+      const routedDistance = needsVia ? Math.max(0.001, Math.hypot(pos.row - before.row, pos.col - before.col) + Math.hypot(unit.row - before.row, unit.col - before.col)) : directDistance;
+      const durationMs = Math.max(160, Math.min(980, Math.round(routedDistance * 780)));
+      if (Math.abs(x) <= 2.2 && Math.abs(y) <= 2.2 && adjacentStep) {
+        const viaRow = needsVia ? before.row : null;
+        const viaCol = needsVia ? before.col : null;
+        const viaX = needsVia ? viaCol - unit.col : null;
+        const viaY = needsVia ? viaRow - unit.row : null;
+        const viaPct = needsVia ? Math.max(0.2, Math.min(0.75, Math.hypot(pos.row - viaRow, pos.col - viaCol) / routedDistance)) : null;
+        offsets.set(unit.id, { x, y, durationMs, ...(needsVia ? { viaX, viaY } : {}) });
+        nextMotions.set(unit.id, { fromRow: pos.row, fromCol: pos.col, toRow: unit.row, toCol: unit.col, startedAt: now, durationMs, ...(needsVia ? { viaRow, viaCol, viaPct } : {}) });
       }
     }
     pendingUnitMotionRef.current = nextMotions;

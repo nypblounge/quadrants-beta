@@ -3259,6 +3259,20 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   animation: unit-walk-smooth var(--move-duration, 780ms) linear both;
   will-change: transform;
 }
+.unit-token.unit-moving.unit-moving-turn {
+  animation-name: unit-walk-turn;
+}
+@keyframes unit-walk-turn {
+  0% {
+    transform: translate(calc(var(--move-x, 0) * var(--move-step, 100%)), calc(var(--move-y, 0) * var(--move-step, 100%)));
+  }
+  42% {
+    transform: translate(calc(var(--move-via-x, 0) * var(--move-step, 100%)), calc(var(--move-via-y, 0) * var(--move-step, 100%)));
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
 @keyframes unit-walk-smooth {
   from { transform: translate(calc(var(--move-x, 0) * var(--move-step, 100%)), calc(var(--move-y, 0) * var(--move-step, 100%))); }
   to { transform: translate(0, 0); }
