@@ -3398,18 +3398,15 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .shop-search-input::placeholder { color: rgba(226, 232, 240, 0.58); }
 .fight-shop-toolbar { margin-bottom: 8px; }
 .fight-gear-shop { max-height: 42vh; overflow: auto; padding-right: 3px; }
-.hill-edge-top { border-top-color: #c084fc !important; box-shadow: inset 0 3px 0 rgba(192, 132, 252, 0.92); }
-.hill-edge-bottom { border-bottom-color: #c084fc !important; box-shadow: inset 0 -3px 0 rgba(192, 132, 252, 0.92); }
-.hill-edge-left { border-left-color: #c084fc !important; }
-.hill-edge-right { border-right-color: #c084fc !important; }
-.hill-edge-left::before, .hill-edge-right::after {
+.hill-edge-top, .hill-edge-bottom, .hill-edge-left, .hill-edge-right { border-color: #c084fc !important; }
+.hill-edge-top::before, .hill-edge-bottom::after, .hill-edge-left::before, .hill-edge-right::after {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: rgba(192, 132, 252, 0.92);
+  background: rgba(192, 132, 252, 0.96);
   pointer-events: none;
+  z-index: 9;
 }
-.hill-edge-left::before { left: 0; }
-.hill-edge-right::after { right: 0; }
+.hill-edge-top::before { left: 0; right: 0; top: 0; height: 3px; }
+.hill-edge-bottom::after { left: 0; right: 0; bottom: 0; height: 3px; }
+.hill-edge-left::before { top: 0; bottom: 0; left: 0; width: 3px; }
+.hill-edge-right::after { top: 0; bottom: 0; right: 0; width: 3px; }
