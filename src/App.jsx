@@ -4573,7 +4573,8 @@ function UnitTokenView({ unit, bump, showName = true, visualOffset = null }) {
     background: `radial-gradient(circle at center, ${coreColor} 66%, transparent 68%), conic-gradient(#22c55e 0 ${hpPct}%, rgba(127,29,29,.95) ${hpPct}% 100%)`,
   };
   const tokenStyle = {
-    ...(footprintSize > 1 ? { "--unit-size": footprintSize } : {}),
+    '--unit-size': footprintSize,
+    '--move-step-pct': (100 / Math.max(1, footprintSize)) + '%',
     ...(visualOffset ? { "--move-x": visualOffset.x, "--move-y": visualOffset.y, "--move-duration": visualOffset.durationMs ? String(Math.round(visualOffset.durationMs)) + "ms" : undefined } : {}),
   };
   return (

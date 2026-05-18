@@ -2058,7 +2058,7 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 
 /* v3.26: render 2x2 NPC anchors above neighboring cells and lock outer tree wall from build edits. */
 .board .cell.large-unit-anchor-cell {
-  z-index: 120 !important;
+  z-index: 520 !important;
   overflow: visible !important;
 }
 .board .cell.large-unit-anchor-cell .cell-content {
@@ -2463,7 +2463,7 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   top: calc((1 - var(--unit-size, 2)) * 100%) !important;
   width: calc(var(--unit-size, 2) * 100%) !important;
   height: calc(var(--unit-size, 2) * 100%) !important;
-  z-index: 140;
+  z-index: 420 !important;
   justify-content: center;
   pointer-events: none;
   overflow: visible;
@@ -3236,7 +3236,7 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   will-change: transform;
 }
 @keyframes unit-walk-smooth {
-  from { transform: translate(calc(var(--move-x, 0) * 100%), calc(var(--move-y, 0) * 100%)); }
+  from { transform: translate(calc(var(--move-x, 0) * var(--move-step-pct, 100%)), calc(var(--move-y, 0) * var(--move-step-pct, 100%))); }
   to { transform: translate(0, 0); }
 }
 
@@ -3343,4 +3343,25 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .game-shell,
 .board-card {
   min-width: 0;
+}
+
+
+/* Large-unit movement polish: keep 2x2/3x3 tokens above ground tiles while their anchor cell moves. */
+.board .cell.large-unit-anchor-cell,
+.board .cell.moving-unit-cell,
+.board .cell:has(.unit-moving) {
+  overflow: visible !important;
+  z-index: 520 !important;
+}
+.board .cell.large-unit-anchor-cell .cell-content,
+.board .cell.moving-unit-cell .cell-content,
+.board .cell:has(.unit-moving) .cell-content {
+  position: relative;
+  overflow: visible !important;
+  z-index: 521;
+}
+.board .cell.large-unit-anchor-cell .unit-token.large-unit,
+.board .cell.moving-unit-cell .unit-token.large-unit,
+.board .cell:has(.unit-moving) .unit-token.large-unit {
+  z-index: 530 !important;
 }
