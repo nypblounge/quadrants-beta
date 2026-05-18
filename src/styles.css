@@ -3302,14 +3302,14 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   animation: hitsplatIconFade 2.4s ease-out forwards !important;
 }
 .splat-text { transform: translateY(-1px); }
-.splat-pos-0 { --splat-x: -50%; --splat-y: calc(-50% - 36px); }
-.splat-pos-1 { --splat-x: calc(-50% + 30px); --splat-y: calc(-50% - 26px); }
-.splat-pos-2 { --splat-x: calc(-50% + 42px); --splat-y: -50%; }
-.splat-pos-3 { --splat-x: calc(-50% + 30px); --splat-y: calc(-50% + 26px); }
-.splat-pos-4 { --splat-x: -50%; --splat-y: calc(-50% + 36px); }
-.splat-pos-5 { --splat-x: calc(-50% - 30px); --splat-y: calc(-50% + 26px); }
-.splat-pos-6 { --splat-x: calc(-50% - 42px); --splat-y: -50%; }
-.splat-pos-7 { --splat-x: calc(-50% - 30px); --splat-y: calc(-50% - 26px); }
+.splat-pos-0 { --splat-x: -50%; --splat-y: calc(-50% - 25px); }
+.splat-pos-1 { --splat-x: calc(-50% + 22px); --splat-y: calc(-50% - 18px); }
+.splat-pos-2 { --splat-x: calc(-50% + 30px); --splat-y: -50%; }
+.splat-pos-3 { --splat-x: calc(-50% + 22px); --splat-y: calc(-50% + 18px); }
+.splat-pos-4 { --splat-x: -50%; --splat-y: calc(-50% + 25px); }
+.splat-pos-5 { --splat-x: calc(-50% - 22px); --splat-y: calc(-50% + 18px); }
+.splat-pos-6 { --splat-x: calc(-50% - 30px); --splat-y: -50%; }
+.splat-pos-7 { --splat-x: calc(-50% - 22px); --splat-y: calc(-50% - 18px); }
 
 
 /* v3.49 fixed board viewport */
@@ -3365,3 +3365,22 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 .board .cell:has(.unit-moving) .unit-token.large-unit {
   z-index: 530 !important;
 }
+
+.collapsible-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.collapsible-card > summary::-webkit-details-marker { display: none; }
+.collapsible-card > summary h3 { margin: 0; }
+.collapsible-card > summary::after {
+  content: "▾";
+  color: #facc15;
+  font-weight: 900;
+  transition: transform .16s ease;
+}
+.collapsible-card:not([open]) > summary::after { transform: rotate(-90deg); }
+.collapsible-card:not([open]) { gap: 0; }

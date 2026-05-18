@@ -3086,10 +3086,18 @@ function occupiedCellSetFor(units, setup, movingUnit = null) {
   return occupied;
 }
 
+function unitFootprintTouchesOwnBase(unit, row, col, setup) {
+  if (!unit || unit.team === "npc") return false;
+  return unitFootprintAt(unit, row, col).some((cell) => baseTeamAt(cell.row, cell.col, setup) === unit.team);
+}
+
 function canUnitStandAt(board, units, unit, row, col, setup, options = {}) {
   const ignoreOccupied = Boolean(options.ignoreOccupied);
   const occupiedSet = options.occupiedSet || null;
+  const allowOwnBase = Boolean(options.allowOwnBase);
   const size = sizeOf(setup);
+  const allowFlagReturnBase = setup?.gameMode === "capture_flag" && Boolean(unit?.carryingFlagTeam);
+  if (!allowOwnBase && !allowFlagReturnBase && unitFootprintTouchesOwnBase(unit, row, col, setup) && !(unit.row === row && unit.col === col)) return false;
   for (const cell of unitFootprintAt(unit, row, col)) {
     if (!inBounds(cell.row, cell.col, size)) return false;
     if (!walkable(board[cell.row]?.[cell.col], setup)) return false;
@@ -6544,8 +6552,8 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
       )}
 
       {game.setup.npcSpawns && (
-        <section className="card compact npc-tracker-card">
-          <h3>NPC Tracker</h3>
+        <details className="card compact npc-tracker-card collapsible-card" open>
+          <summary><h3>NPC Tracker</h3></summary>
           <div className="npc-tracker-list">
             {npcTrackerRows(game).map((row) => (
               <div key={`npc-track-${row.style}`} className="npc-tracker-row">
@@ -6561,26 +6569,26 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
             {npcTrackerRows(game).length === 0 && <p className="muted">No NPCs configured to spawn.</p>}
           </div>
           <p className="muted">Bodies counts NPCs created. Respawns counts successful timer triggers. Both also infer from live/dead NPCs if Firebase counters lag.</p>
-        </section>
+        </details>
       )}
 
-      <section className="card compact">
-        <h3>Kill Feed</h3>
+      <details className="card compact collapsible-card" open>
+        <summary><h3>Kill Feed</h3></summary>
         <div className="kill-feed left-feed">
           {(game.killFeed || []).slice(0, 12).map((entry) => <div className="feed-line" key={entry.id} style={{ borderColor: TEAM_META[entry.team]?.color }}>{entry.text}</div>)}
           {!(game.killFeed || []).length && <p className="muted">No kills or flag grabs yet.</p>}
         </div>
-      </section>
+      </details>
 
-      <section className="card compact">
-        <h3>Respawns</h3>
+      <details className="card compact collapsible-card" open>
+        <summary><h3>Respawns</h3></summary>
         {teams.map((team) => (
           <div key={`respawn-${team}`} className="team-status">
             <span>{teamDisplayLabel(lobby, team)}</span>
             <Pill>{respawns.filter((u) => u.team === team).length} queued</Pill>
           </div>
         ))}
-      </section>
+      </details>
     </aside>
   );
 }
@@ -6757,8 +6765,8 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
         </section>
       )}
 
-      <section className="card compact">
-        <h3>Teams</h3>
+      <details className="card compact collapsible-card" open>
+        <summary><h3>Teams</h3></summary>
         {teams.map((team) => (
           <div key={team} className="team-status">
             <span>{teamDisplayLabel(lobby, team)}</span>
@@ -6767,7 +6775,7 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
             <Pill>{units.filter((u) => u.team === team).length} alive</Pill>
           </div>
         ))}
-      </section>
+      </details>
 
       {myTeam && (
         <section className="card compact">
