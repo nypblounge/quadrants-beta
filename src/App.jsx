@@ -5888,8 +5888,8 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     const mid = midOf(size);
     const start = mid - radius;
     const tiles = radius * 2 + 1;
-    const insetX = 2;
-    const insetY = 2;
+    const insetX = 4;
+    const insetY = 4;
     return {
       left: "calc(" + start + " * var(--tile-size) + " + insetX + "px)",
       top: "calc(" + start + " * var(--tile-size) + " + insetY + "px)",
