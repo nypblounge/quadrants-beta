@@ -908,6 +908,17 @@ function generateLobbyCode() {
   return code;
 }
 
+const BROWSER_ID_STORAGE_KEY = "quadrants_ws_browser_id";
+
+function ensureBrowserId() {
+  let id = localStorage.getItem(BROWSER_ID_STORAGE_KEY);
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : `browser_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(BROWSER_ID_STORAGE_KEY, id);
+  }
+  return id;
+}
+
 function ensurePlayerId() {
   let id = localStorage.getItem("quadrants_player_id");
   if (!id) {
@@ -7087,6 +7098,7 @@ export default function QuadrantsOnline() {
   const [name, setName] = useState(localStorage.getItem("quadrants_player_name") || "");
   const [joinCode, setJoinCode] = useState("");
   const [playerId, setPlayerId] = useState(() => ensurePlayerId());
+  const [browserId] = useState(() => ensureBrowserId());
   const [lobbyCode, setLobbyCode] = useState(localStorage.getItem("quadrants_lobby_code") || "");
   const [lobby, setLobby] = useState(null);
   const [status, setStatus] = useState("");
@@ -7226,6 +7238,7 @@ export default function QuadrantsOnline() {
       const now = Date.now();
       return update(ref(db), {
         [`lobbies/${lobbyCode}/players/${playerId}/connected`]: true,
+        [`lobbies/${lobbyCode}/players/${playerId}/browserId`]: browserId,
         [`lobbies/${lobbyCode}/players/${playerId}/lastSeen`]: now,
         [`lobbies/${lobbyCode}/lastActivityAt`]: now,
       }).catch(() => {});
@@ -7255,7 +7268,7 @@ export default function QuadrantsOnline() {
         }).catch(() => {});
       }
     };
-  }, [lobbyCode, playerId, playerExistsInLobby]);
+  }, [lobbyCode, playerId, playerExistsInLobby, browserId]);
 
   useEffect(() => {
     if (!lobby || !lobbyCode) return;
@@ -7458,6 +7471,7 @@ export default function QuadrantsOnline() {
           [playerId]: {
             id: playerId,
             name: cleanName,
+            browserId,
             team: "red",
             connected: true,
             joinedAt: now,
@@ -7496,7 +7510,9 @@ export default function QuadrantsOnline() {
         ? [playerId, currentPlayer]
         : Object.entries(players).find(([candidateId, candidate]) => {
             if (!candidate || isCpuPlayer({ ...candidate, id: candidateId })) return false;
-            if (String(candidate.name || '').trim().toLowerCase() !== nameKey) return false;
+            const sameBrowser = browserId && candidate.browserId === browserId;
+            const sameName = String(candidate.name || '').trim().toLowerCase() === nameKey;
+            if (!sameBrowser && !sameName) return false;
             const lastSeen = typeof candidate.lastSeen === 'number' ? candidate.lastSeen : 0;
             const recentlyActive = candidate.connected && lastSeen && now - lastSeen <= RECENT_PRESENCE_GRACE_MS;
             return !recentlyActive;
@@ -7516,6 +7532,7 @@ export default function QuadrantsOnline() {
           ...existingPlayer,
           id: resolvedPlayerId,
           name: cleanName,
+          browserId,
           team: existingPlayer.team || openTeam || null,
           connected: true,
           joinedAt: existingPlayer.joinedAt || now,
