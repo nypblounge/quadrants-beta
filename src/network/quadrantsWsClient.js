@@ -1,5 +1,6 @@
 const DEFAULT_RECONNECT_TIMEOUT_MS = 45000;
 const STORAGE_KEY = "quadrants_ws_session";
+const BROWSER_ID_KEY = "quadrants_ws_browser_id";
 
 function defaultWsUrl() {
   const envUrl = import.meta?.env?.VITE_QUADRANTS_WS_URL;
@@ -41,6 +42,20 @@ function clearStoredSession() {
   window.localStorage?.removeItem(STORAGE_KEY);
 }
 
+function makeBrowserId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `browser_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function loadBrowserId() {
+  let id = window.localStorage?.getItem(BROWSER_ID_KEY);
+  if (!id) {
+    id = makeBrowserId();
+    window.localStorage?.setItem(BROWSER_ID_KEY, id);
+  }
+  return id;
+}
+
 export function createQuadrantsWsClient(options = {}) {
   const listeners = new Map();
 
@@ -52,6 +67,7 @@ export function createQuadrantsWsClient(options = {}) {
   let connected = false;
   let manuallyClosed = false;
   let lastRoom = null;
+  const browserId = loadBrowserId();
 
   function emit(type, payload) {
     const callbacks = listeners.get(type);
@@ -105,7 +121,8 @@ export function createQuadrantsWsClient(options = {}) {
     send({
       type: "resume_session",
       clientId: stored.clientId,
-      sessionToken: stored.sessionToken
+      sessionToken: stored.sessionToken,
+      browserId
     });
   } else {
     saveStoredSession({ clientId, sessionToken });
@@ -202,15 +219,15 @@ export function createQuadrantsWsClient(options = {}) {
     on,
 
     setName(name) {
-      return send({ type: "set_name", name });
+      return send({ type: "set_name", name, browserId });
     },
 
     createRoom() {
-      return send({ type: "create_room" });
+      return send({ type: "create_room", browserId });
     },
 
     joinRoom(code) {
-      return send({ type: "join_room", code });
+      return send({ type: "join_room", code, browserId });
     },
 
     setReady(ready) {
@@ -249,7 +266,8 @@ export function createQuadrantsWsClient(options = {}) {
       return send({
         type: "resume_session",
         clientId: session.clientId,
-        sessionToken: session.sessionToken
+        sessionToken: session.sessionToken,
+        browserId
       });
     },
 
@@ -264,7 +282,8 @@ export function createQuadrantsWsClient(options = {}) {
         clientId,
         sessionToken,
         reconnectTimeoutMs,
-        lastRoom
+        lastRoom,
+        browserId
       };
     }
   };
