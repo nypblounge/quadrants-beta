@@ -1806,9 +1806,11 @@ function unitSize(unitOrStyle) {
 
 function unitFootprintAt(unitOrStyle, row, col) {
   const size = unitSize(unitOrStyle);
+  const anchorRow = Number(row);
+  const anchorCol = Number(col);
   const cells = [];
   for (let dr = 0; dr < size; dr++) {
-    for (let dc = 0; dc < size; dc++) cells.push({ row: Number(row) + dr, col: Number(col) + dc });
+    for (let dc = 0; dc < size; dc++) cells.push({ row: anchorRow - dr, col: anchorCol + dc });
   }
   return cells;
 }
