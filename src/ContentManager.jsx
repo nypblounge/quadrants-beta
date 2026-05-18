@@ -91,6 +91,36 @@ function normalizeStatBlock(stats = {}, hpFallback = 75) {
   return out;
 }
 
+function editorList(value) {
+  if (value == null || value === '') return [];
+  if (Array.isArray(value)) return value.flatMap(editorList);
+  return String(value).replace(/[|\s]+/g, ',').split(',').map(cleanId).filter(Boolean);
+}
+
+function normalizeWeakness(weakness = {}, index = 0) {
+  const req = weakness.requirements || {};
+  const id = cleanId(weakness.id || weakness.name || ('weakness_' + (index + 1))) || ('weakness_' + (index + 1));
+  return {
+    id,
+    name: String(weakness.name || id || ('Weakness ' + (index + 1))).trim(),
+    requirements: {
+      attackStyles: editorList(req.attackStyles || req.attackStyle || weakness.attackStyles || weakness.attackStyle),
+      attackTags: editorList(req.attackTags || req.attackTag || weakness.attackTags || weakness.attackTag),
+      equippedItemIds: editorList(req.equippedItemIds || req.equippedItemId || weakness.equippedItemIds || weakness.equippedItemId),
+      equippedItemTags: editorList(req.equippedItemTags || req.equippedItemTag || weakness.equippedItemTags || weakness.equippedItemTag),
+      spellIds: editorList(req.spellIds || req.spellId || weakness.spellIds || weakness.spellId),
+      spellTags: editorList(req.spellTags || req.spellTag || weakness.spellTags || weakness.spellTag),
+      prayers: editorList(req.prayers || req.prayer || weakness.prayers || weakness.prayer),
+    },
+    accuracyMultiplier: Math.max(1, numberValue(weakness.accuracyMultiplier ?? weakness.accuracyBonus, 1)),
+    damageMultiplier: Math.max(1, numberValue(weakness.damageMultiplier ?? weakness.damageBonus, 1)),
+  };
+}
+
+function normalizeWeaknesses(weaknesses = []) {
+  return (Array.isArray(weaknesses) ? weaknesses : []).map((weakness, index) => normalizeWeakness(weakness, index));
+}
+
 function normalizeNpcAttack(attack = {}, index = 0, fallback = {}) {
   const fallbackId = "attack_" + (index + 1);
   const combatType = UNIT_COMBAT_TYPES.includes(attack.combatType) ? attack.combatType : (fallback.combatType || "melee");
@@ -153,6 +183,7 @@ function normalizeNpc(npc) {
     notes: String(npc.notes || "").trim(),
     stats,
     attacks,
+    weaknesses: normalizeWeaknesses(npc.weaknesses),
     drops: (npc.drops || []).map(normalizeDrop),
   };
 }
@@ -175,6 +206,7 @@ function normalizeUnit(unit) {
     buyable: unit.buyable !== false,
     effectKey: String(unit.effectKey || "").trim(),
     notes: String(unit.notes || "").trim(),
+    weaknesses: normalizeWeaknesses(unit.weaknesses),
     stats,
   };
 }
@@ -242,6 +274,46 @@ function readDraft() {
   } catch {
     return makeDefaultContent();
   }
+}
+
+function WeaknessEditor({ title, weaknesses = [], onChange }) {
+  const rows = normalizeWeaknesses(weaknesses);
+  const updateWeakness = (index, patch) => {
+    onChange(rows.map((weakness, rowIndex) => rowIndex === index ? normalizeWeakness({ ...weakness, ...patch }, rowIndex) : weakness));
+  };
+  const updateRequirement = (index, key, value) => {
+    const weakness = rows[index] || {};
+    updateWeakness(index, { requirements: { ...(weakness.requirements || {}), [key]: editorList(value) } });
+  };
+  const addWeakness = () => onChange([...rows, normalizeWeakness({ id: 'weakness_' + (rows.length + 1), name: 'New weakness', accuracyMultiplier: 1.25, damageMultiplier: 1 }, rows.length)]);
+  const deleteWeakness = (index) => onChange(rows.filter((_, rowIndex) => rowIndex !== index));
+  return (
+    <div className='weakness-editor'>
+      <div className='content-editor-header spaced'>
+        <h3>{title}</h3>
+        <button type='button' className='btn' onClick={addWeakness}>Add weakness</button>
+      </div>
+      {!rows.length ? <p className='muted'>No weaknesses configured.</p> : (
+        <div className='loot-drop-table'>
+          {rows.map((weakness, index) => (
+            <div key={weakness.id + '-' + index} className='loot-drop-row'>
+              <Field label='Name'><input value={weakness.name} onChange={(e) => updateWeakness(index, { name: e.target.value })} /></Field>
+              <Field label='Attack styles'><input value={(weakness.requirements?.attackStyles || []).join(', ')} onChange={(e) => updateRequirement(index, 'attackStyles', e.target.value)} placeholder='magic, range' /></Field>
+              <Field label='Attack tags'><input value={(weakness.requirements?.attackTags || []).join(', ')} onChange={(e) => updateRequirement(index, 'attackTags', e.target.value)} placeholder='water, dragonbane' /></Field>
+              <Field label='Equipped items'><input value={(weakness.requirements?.equippedItemIds || []).join(', ')} onChange={(e) => updateRequirement(index, 'equippedItemIds', e.target.value)} placeholder='antidragonshield' /></Field>
+              <Field label='Item tags'><input value={(weakness.requirements?.equippedItemTags || []).join(', ')} onChange={(e) => updateRequirement(index, 'equippedItemTags', e.target.value)} placeholder='dragonbane' /></Field>
+              <Field label='Spell IDs'><input value={(weakness.requirements?.spellIds || []).join(', ')} onChange={(e) => updateRequirement(index, 'spellIds', e.target.value)} placeholder='water_bolt' /></Field>
+              <Field label='Spell tags'><input value={(weakness.requirements?.spellTags || []).join(', ')} onChange={(e) => updateRequirement(index, 'spellTags', e.target.value)} placeholder='water' /></Field>
+              <Field label='Prayers'><input value={(weakness.requirements?.prayers || []).join(', ')} onChange={(e) => updateRequirement(index, 'prayers', e.target.value)} placeholder='piety' /></Field>
+              <Field label='Accuracy x'><NumberInput value={weakness.accuracyMultiplier || 1} min={1} step={0.05} onChange={(value) => updateWeakness(index, { accuracyMultiplier: value })} /></Field>
+              <Field label='Damage x'><NumberInput value={weakness.damageMultiplier || 1} min={1} step={0.05} onChange={(value) => updateWeakness(index, { damageMultiplier: value })} /></Field>
+              <button type='button' className='btn' onClick={() => deleteWeakness(index)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ImageDrop({ value, preview, onPathChange, onPreviewChange, label = "Image" }) {
@@ -690,6 +762,7 @@ function ContentManager({ onBack }) {
                       <Field key={key} label={key}><NumberInput value={unit.stats?.[key] || 1} min={1} onChange={(value) => updateUnit(unit.id, { stats: { ...(unit.stats || {}), [key]: value } })} /></Field>
                     ))}
                   </div>
+                  <WeaknessEditor title="Unit weaknesses" weaknesses={unit.weaknesses || []} onChange={(weaknesses) => updateUnit(unit.id, { weaknesses })} />
                 </>
               )}
             </section>
@@ -760,6 +833,7 @@ function ContentManager({ onBack }) {
                       </div>
                     ))}
                   </div>
+                  <WeaknessEditor title="NPC weaknesses" weaknesses={npc.weaknesses || []} onChange={(weaknesses) => updateNpc(npc.id, { weaknesses })} />
                   <div className='content-editor-header spaced'>
                     <h3>Loot table</h3>
                     <button className='btn' onClick={addNpcDrop}>Add drop</button>

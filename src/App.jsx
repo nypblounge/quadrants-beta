@@ -786,6 +786,8 @@ function styleDefsFromContentPack(content = GAME_CONTENT_PACK) {
       attacks,
       npc: true,
       effectKey: raw.effectKey || legacy.effectKey || "",
+      attackTags: raw.attackTags || raw.tags || legacy.attackTags || legacy.tags || [],
+      weaknesses: Array.isArray(raw.weaknesses) ? raw.weaknesses : (legacy.weaknesses || []),
     };
   }
   for (const raw of content.units || []) {
@@ -808,6 +810,8 @@ function styleDefsFromContentPack(content = GAME_CONTENT_PACK) {
       resourceDamage: raw.resourceDamage == null ? legacy.resourceDamage : Math.max(0, Math.round(Number(raw.resourceDamage) || 0)),
       baseStats: { ...(legacy.baseStats || {}), ...(raw.stats || {}) },
       effectKey: raw.effectKey || legacy.effectKey || "",
+      attackTags: raw.attackTags || raw.tags || legacy.attackTags || legacy.tags || [],
+      weaknesses: Array.isArray(raw.weaknesses) ? raw.weaknesses : (legacy.weaknesses || []),
     };
   }
   return out;
@@ -2851,11 +2855,12 @@ function rollAttack(attacker, defenderStyle, defenderStats) {
   if (adv === 1) chance += 0.1;
   if (adv === -1) chance -= 0.1;
   if (!safeAttacker.carryingFlagTeam && safeAttacker.style === "ancient_staff" && defenderStyle && combatType(defenderStyle) === "range") chance -= style.accuracyPenaltyVsRange ?? 0;
+  chance *= weaknessAccuracyMultiplier(safeAttacker, defenderUnit, effectiveStyle);
   chance = Math.max(0.05, Math.min(0.92, chance));
   return Math.random() <= chance;
 }
 
-function maxDamageRoll(attacker, defenderStyle) {
+function maxDamageRoll(attacker, defenderStyle, defenderUnit = null) {
   const safeAttacker = normalizeRuntimeUnit(attacker) || attacker;
   const effectiveStyle = effectiveAttackStyleId(safeAttacker);
   const style = styleDefinition(effectiveStyle);
@@ -2866,6 +2871,7 @@ function maxDamageRoll(attacker, defenderStyle) {
   let maxHit = Math.max(1, Math.floor(style.baseDamage * (0.65 + level / 100) * prayerDamageMultiplier(safeAttacker, effectiveStyle)));
   if (adv === 1) maxHit = Math.ceil(maxHit * 1.1);
   if (adv === -1) maxHit = Math.max(1, Math.floor(maxHit * 0.9));
+  maxHit = Math.max(1, Math.floor(maxHit * weaknessDamageMultiplier(safeAttacker, defenderUnit, effectiveStyle)));
   if (!safeAttacker.carryingFlagTeam && style.dharokHpScale) {
     const seenMaxHp = Math.max(maxHp(safeAttacker), safeAttacker.maxHpSeen ?? 0);
     const missingHp = Math.max(0, seenMaxHp - Math.max(0, safeAttacker.hp ?? 0));
@@ -2874,10 +2880,10 @@ function maxDamageRoll(attacker, defenderStyle) {
   return maxHit;
 }
 
-function rollDamage(attacker, defenderStyle) {
+function rollDamage(attacker, defenderStyle, defenderUnit = null) {
   const safeAttacker = normalizeRuntimeUnit(attacker) || attacker;
   const style = styleDefinition(safeAttacker?.style);
-  const maxHit = maxDamageRoll(safeAttacker, defenderStyle);
+  const maxHit = maxDamageRoll(safeAttacker, defenderStyle, defenderUnit);
   let damage = 1 + Math.floor(Math.random() * maxHit);
   if (style.volatileChance && Math.random() < style.volatileChance) damage *= style.volatileMultiplier ?? 3;
   return damage;
@@ -2925,6 +2931,7 @@ function npcAttackOptionMaxHit(attacker, target, option = {}) {
   let maxHit = Math.max(1, Math.floor(attack.baseDamage * (0.65 + level / 100) * prayerDamageMultiplier(attacker, attack.combatType)));
   if (adv === 1) maxHit = Math.ceil(maxHit * 1.1);
   if (adv === -1) maxHit = Math.max(1, Math.floor(maxHit * 0.9));
+  maxHit = Math.max(1, Math.floor(maxHit * weaknessDamageMultiplier(attacker, target, attack.combatType, attack)));
   return maxHit;
 }
 
@@ -2936,6 +2943,7 @@ function rollNpcAttackOptionAccuracy(attacker, target, option = {}) {
   let chance = 0.55 + (offense - defence) / 190;
   if (adv === 1) chance += 0.1;
   if (adv === -1) chance -= 0.1;
+  chance *= weaknessAccuracyMultiplier(attacker, target, attack.combatType, attack);
   chance = Math.max(0.05, Math.min(0.92, chance));
   return Math.random() <= chance;
 }
@@ -2971,6 +2979,18 @@ function unitBuffKeys(unit) {
   return keys.map((key) => String(key || "").toLowerCase());
 }
 
+function weakList(v){
+  if(v==null||v==='')return [];
+  if(Array.isArray(v))return v.flatMap(weakList);
+  return String(v).replace(/[|\s]+/g,',').split(',').map(cleanContentId).filter(Boolean);
+}
+function weakReq(e,keys){const r=e?.requirements||{};return keys.flatMap(k=>weakList(r[k]??e?.[k]));}
+function unitItemTags(unit){return equippedItemIds(unit).flatMap(id=>{const item=itemById(id)||{};return [id,item.effectKey,item.type,item.slot,...(Array.isArray(item.tags)?item.tags:weakList(item.tags))];}).map(cleanContentId).filter(Boolean);}
+function attackContextFor(attacker,attackStyle,option={}){const styleId=safeStyleId(attackStyle||effectiveAttackStyleId(attacker));const style=styleDefinition(styleId);const type=option.combatType||combatType(styleId);return {styles:[styleId,type].map(cleanContentId).filter(Boolean),attackTags:[...weakList(style.tags),...weakList(style.attackTags),...weakList(style.spellTags),...weakList(style.effectKey),...weakList(option.tags),...weakList(option.attackTags),...weakList(option.spellTags),...weakList(option.special),cleanContentId(type)].filter(Boolean),itemIds:equippedItemIds(attacker),itemTags:unitItemTags(attacker),prayers:prayerIds(attacker).map(cleanContentId)};}
+function weaknessMatches(entry,ctx){const any=(need,have)=>!need.length||need.some(v=>have.includes(v));return any(weakReq(entry,['attackStyle','attackStyles','combatType','combatTypes']),ctx.styles)&&any(weakReq(entry,['attackTag','attackTags']),ctx.attackTags)&&any(weakReq(entry,['equippedItemId','equippedItemIds']),ctx.itemIds)&&any(weakReq(entry,['equippedItemTag','equippedItemTags']),ctx.itemTags)&&any(weakReq(entry,['spellId','spellIds','spellTag','spellTags']),ctx.attackTags)&&any(weakReq(entry,['prayer','prayers']),ctx.prayers);}
+function bestMatchingWeakness(attacker,target,attackStyle,option={}){const list=[...(styleDefinition(target?.style).weaknesses||[]),...(Array.isArray(target?.weaknesses)?target.weaknesses:[])];if(!list.length)return null;const ctx=attackContextFor(attacker,attackStyle,option);let best=null,score=0;for(const entry of list){if(!weaknessMatches(entry,ctx))continue;const acc=Math.max(1,Number(entry.accuracyMultiplier??entry.accuracyBonus??1)||1);const dmg=Math.max(1,Number(entry.damageMultiplier??entry.damageBonus??1)||1);const next=(acc-1)+(dmg-1);if(next>score){score=next;best={accuracyMultiplier:acc,damageMultiplier:dmg};}}return best;}
+function weaknessAccuracyMultiplier(attacker,target,attackStyle,option={}){return bestMatchingWeakness(attacker,target,attackStyle,option)?.accuracyMultiplier||1;}
+function weaknessDamageMultiplier(attacker,target,attackStyle,option={}){return bestMatchingWeakness(attacker,target,attackStyle,option)?.damageMultiplier||1;}
 function hasAntiDragonProtection(unit) {
   const ids = equippedItemIds(unit);
   if (ids.includes("antidragonshield") || ids.includes("anti_dragon_shield")) return true;
@@ -3220,8 +3240,8 @@ function resolveUnitHit(attacker, target) {
     grantXp(target, "defence", 1);
     return { damage: 0, hit: false };
   }
-  const maxHit = maxDamageRoll(attacker, target.style);
-  const rolledDamage = rollDamage(attacker, target.style);
+  const maxHit = maxDamageRoll(attacker, target.style, target);
+  const rolledDamage = rollDamage(attacker, target.style, target);
   const dmg = applyUnitDamage(attacker, target, rolledDamage, effectiveAttackStyleId(attacker));
   return { damage: dmg, hit: true, maxHit, isMaxHit: rolledDamage >= maxHit };
 }
