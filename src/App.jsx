@@ -6069,12 +6069,33 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                     {targetHere && <div className="target-marker">🎯</div>}
                     {showResourceHp && <div className="resource-hpbar"><div className="resource-hpbar-fill" style={{ width: `${Math.max(0, Math.min(100, (resourceHp / resourceMax) * 100))}%` }} /></div>}
                     {cell.regrowType && !fogged && <div className="regrow-timer">{Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s</div>}
-                    {firstUnit && <UnitToken unit={{ ...firstUnit, currentFightTime: game.fightTime || 0 }} visualOffset={firstUnitVisualOffset} bump={cellEffects.length > 0} showName={showUnitNames} />}
+                    {/* units render on board overlay to avoid tile-parent remount hitches */}
                     {anchorUnits.length > 1 && <div className="stack-count">+{anchorUnits.length - 1}</div>}
                   </div>
                 </>
               )}
             </button>
+          );
+        })}
+      </div>
+      <div className='unit-board-overlay' aria-hidden='true'>
+        {Array.from(unitAnchorsByCell.entries()).map(([anchorKey, group]) => {
+          const sorted = [...group].sort((a, b) => Number(b.id === selectedUnitId) - Number(a.id === selectedUnitId) || Number(Boolean(b.carryingFlagTeam)) - Number(Boolean(a.carryingFlagTeam)) || a.team.localeCompare(b.team));
+          const unit = sorted[0];
+          if (!unit || unit.hp <= 0) return null;
+          const unitCell = game.board?.[unit.row]?.[unit.col] || null;
+          const buildLimited = lobby.phase === 'build';
+          const buildVisible = !buildLimited || !activeTeam || unitCell?.owner === activeTeam || isCenterCell(unit.row, unit.col, setup);
+          if (buildLimited && !buildVisible) return null;
+          const visualOffset = visualUnitOffsets.get(unit.id) || null;
+          const unitEffects = effectsByCell.get(key(unit.row, unit.col)) || [];
+          const footprintSize = unitSize(unit);
+          const tileSizePx = largeBoard ? 39 : 41;
+          const tileStepPx = tileSizePx + 4;
+          return (
+            <div key={anchorKey} className={'unit-board-overlay-token ' + (unit.id === selectedUnitId ? 'selected-overlay-unit' : '')} style={{ left: unit.col * tileStepPx, top: unit.row * tileStepPx, width: footprintSize * tileSizePx + Math.max(0, footprintSize - 1) * 4, height: footprintSize * tileSizePx + Math.max(0, footprintSize - 1) * 4, zIndex: 20 + unit.row * size + unit.col + (unit.id === selectedUnitId ? 999 : 0), '--move-step': tileStepPx + 'px' }}>
+              <UnitToken unit={{ ...unit, currentFightTime: game.fightTime || 0 }} visualOffset={visualOffset} bump={unitEffects.length > 0} showName={showUnitNames} />
+            </div>
           );
         })}
       </div>
