@@ -5712,7 +5712,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     const nextMotions = new Map();
     const positionAt = (motion) => {
       if (!motion) return null;
-      const pct = Math.max(0, Math.min(1, (now - motion.startedAt) / Math.max(1, motion.durationMs || 960)));
+      const pct = Math.max(0, Math.min(1, (now - motion.startedAt) / Math.max(1, motion.durationMs || 680)));
       return { row: motion.fromRow + (motion.toRow - motion.fromRow) * pct, col: motion.fromCol + (motion.toCol - motion.fromCol) * pct };
     };
     for (const unit of units) {
@@ -5726,7 +5726,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const dx = (pos?.col ?? unit.col) - unit.col;
           const dy = (pos?.row ?? unit.row) - unit.row;
           if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-            offsets.set(unit.id, { x: dx, y: dy, durationMs: Math.max(140, Math.round((oldMotion.durationMs || 960) - (now - oldMotion.startedAt))) });
+            offsets.set(unit.id, { x: dx, y: dy, durationMs: Math.max(80, Math.round((oldMotion.durationMs || 680) - (now - oldMotion.startedAt))) });
             nextMotions.set(unit.id, oldMotion);
           }
         }
@@ -5736,7 +5736,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
       const x = pos.col - unit.col;
       const y = pos.row - unit.row;
       const distance = Math.max(0.001, Math.hypot(x, y));
-      const durationMs = Math.max(240, Math.min(1220, Math.round(distance * 960)));
+      const durationMs = Math.max(180, Math.min(780, Math.round(distance * 680)));
       if (Math.abs(x) <= 2.2 && Math.abs(y) <= 2.2) {
         offsets.set(unit.id, { x, y, durationMs });
         nextMotions.set(unit.id, { fromRow: pos.row, fromCol: pos.col, toRow: unit.row, toCol: unit.col, startedAt: now, durationMs });
