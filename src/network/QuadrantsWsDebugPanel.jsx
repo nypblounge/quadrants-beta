@@ -194,7 +194,7 @@ export function QuadrantsWsDebugPanel() {
         <div>
           <strong>Quadrants WebSocket Debug</strong>
           <div style={styles.subtle}>
-            Debug-only test panel. Firebase gameplay is unchanged.
+            Debug-only test panel for the WebSocket server.
           </div>
         </div>
         <div style={styles.headerActions}>

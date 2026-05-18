@@ -19,6 +19,9 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
   let connected = false;
   let connectPromise = null;
   let requestSeq = 1;
+  let reconnectTimer = null;
+  let reconnectDelayMs = 1000;
+  let manuallyClosed = false;
 
   const pending = new Map();
   const subscriptions = new Map();
@@ -29,6 +32,47 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
     }
 
     ws.send(JSON.stringify(message));
+  }
+
+  function subscribeOne(subscriptionId) {
+    const subscription = subscriptions.get(subscriptionId);
+
+    if (!subscription || subscription.subscribed || !ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    send({
+      type: "store_subscribe",
+      subscriptionId,
+      path: subscription.path
+    });
+
+    subscription.subscribed = true;
+  }
+
+  function resubscribeAll() {
+    for (const subscription of subscriptions.values()) {
+      subscription.subscribed = false;
+    }
+
+    for (const subscriptionId of subscriptions.keys()) {
+      subscribeOne(subscriptionId);
+    }
+  }
+
+  function scheduleReconnect() {
+    if (manuallyClosed || reconnectTimer || subscriptions.size === 0) {
+      return;
+    }
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect().catch((err) => {
+        console.warn("WebSocket store reconnect failed", err);
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10000);
+        scheduleReconnect();
+      });
+    }, reconnectDelayMs);
   }
 
   function resolvePending(message) {
@@ -73,6 +117,8 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
   }
 
   async function connect() {
+    manuallyClosed = false;
+
     if (connected && ws && ws.readyState === WebSocket.OPEN) {
       return;
     }
@@ -81,17 +127,36 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
       return connectPromise;
     }
 
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
     connectPromise = new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       ws = socket;
+      let settled = false;
 
       const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        connectPromise = null;
         reject(new Error("Timed out connecting to WebSocket store."));
+        try {
+          socket.close();
+        } catch {
+          // Ignore close failures during a failed connection attempt.
+        }
       }, 8000);
 
       socket.addEventListener("open", () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         connected = true;
+        connectPromise = null;
+        reconnectDelayMs = 1000;
+        resubscribeAll();
         resolve();
       });
 
@@ -104,18 +169,25 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
       });
 
       socket.addEventListener("close", () => {
+        clearTimeout(timeout);
         connected = false;
         connectPromise = null;
+
+        for (const subscription of subscriptions.values()) {
+          subscription.subscribed = false;
+        }
 
         for (const entry of pending.values()) {
           entry.reject(new Error("WebSocket store connection closed."));
         }
 
         pending.clear();
+        scheduleReconnect();
       });
 
       socket.addEventListener("error", () => {
-        if (!connected) {
+        if (!connected && !settled) {
+          settled = true;
           clearTimeout(timeout);
           connectPromise = null;
           reject(new Error("WebSocket store connection error."));
@@ -181,19 +253,17 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
 
       subscriptions.set(subscriptionId, {
         path: cleanPath,
-        callback
+        callback,
+        subscribed: false
       });
 
       connect()
         .then(() => {
-          send({
-            type: "store_subscribe",
-            subscriptionId,
-            path: cleanPath
-          });
+          subscribeOne(subscriptionId);
         })
         .catch((err) => {
           console.warn("WebSocket store subscription failed", err);
+          scheduleReconnect();
         });
 
       return () => {
@@ -209,6 +279,13 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
     },
 
     disconnect() {
+      manuallyClosed = true;
+
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+
       if (ws) {
         ws.close();
       }

@@ -1,6 +1,6 @@
 # Quadrants Beta Online v2.0 Experimental
 
-GitHub Pages + Firebase Realtime Database multiplayer build.
+GitHub Pages + WebSocket server multiplayer build.
 
 ## Run locally
 
@@ -74,7 +74,7 @@ Push to `main`. The included GitHub Actions workflow builds and deploys to GitHu
 - Enemy resource ownership is recalculated from map quadrant data when needed.
 - Trees and rocks now have 30 HP once chopping/mining starts.
 - Resource health bars display on damaged trees/rocks.
-- Fight simulation syncs board resource HP/clearing/regrowth back to Firebase during combat.
+- Fight simulation syncs board resource HP/clearing/regrowth back to the shared store during combat.
 
 ## v2.9 patch notes
 
@@ -118,7 +118,7 @@ Push to `main`. The included GitHub Actions workflow builds and deploys to GitHu
 
 ## v3.8.1
 
-- Fixed Firebase presence loop that could cause React maximum update depth errors after joining lobbies.
+- Fixed legacy presence loop that could cause React maximum update depth errors after joining lobbies.
 - Presence writes are now throttled with a heartbeat instead of retriggering on every lobby snapshot.
 
 
@@ -141,7 +141,7 @@ Push to `main`. The included GitHub Actions workflow builds and deploys to GitHu
 
 ## Content Manager
 
-This build includes a local content manager for preparing item and NPC definitions without storing bulky data in Firebase.
+This build includes a local content manager for preparing item and NPC definitions without storing bulky data in the shared match state.
 
 Open it from the home screen with **Content Manager**, or go directly to:
 
@@ -155,7 +155,7 @@ The manager can edit:
 - NPC IDs, names, image paths, size, stats, base damage, attack speed, attack range, spawn amount/rate, and loot tables
 - loot table chances and quantity ranges
 
-Exports are static JS/JSON files. Keep images in `public/assets` and use short IDs like `itemId` and `npcId` in Firebase match data.
+Exports are static JS/JSON files. Keep images in `public/assets` and use short IDs like `itemId` and `npcId` in shared match data.
 
 ## v3.32 default content pack
 
@@ -178,7 +178,7 @@ Exports are static JS/JSON files. Keep images in `public/assets` and use short I
 - Fight Phase now shows an **NPC Tracker** in the left panel when NPC spawns are enabled.
 - The tracker shows alive count, total NPC bodies spawned during the match, and successful respawn triggers used versus the configured max.
 - Starting a fight now explicitly resets `npcSpawnedTotals`, `npcRespawnTotals`, and the per-style spawn schedule so stale counters from earlier fights/lobbies cannot leak into the next fight.
-- The host simulation loop now prevents overlapping async ticks from running at the same time, which reduces the chance of duplicate spawn processing when Firebase reads/writes are slow.
+- The host simulation loop now prevents overlapping async ticks from running at the same time, which reduces the chance of duplicate spawn processing when network reads/writes are slow.
 - Respawn caps are also inferred defensively from total spawned NPC bodies if an older lobby is missing `npcRespawnTotals`.
 
 ## v3.45 NPC respawn semantics
@@ -189,15 +189,15 @@ Exports are static JS/JSON files. Keep images in `public/assets` and use short I
 - `Number of respawns per match` caps successful spawn timer triggers; `0` means unlimited. A value of `1` now allows only one successful spawn trigger for that NPC type.
 - Spawn warning icons use the same respawn-trigger and on-map-cap rules, so warnings should not appear when the next trigger cannot spawn anything.
 
-## Firebase bandwidth notes
+## WebSocket store traffic notes
 
-Firebase Realtime Database bandwidth pressure mainly comes from fight-phase state sync. The current architecture uses a host-authoritative browser simulation and connected clients subscribe to the live lobby/game state. The largest payloads are `game.units`, `game.board`, cosmetic `game.splats` / `game.effects`, and inventories/loot when they change.
+WebSocket store bandwidth pressure mainly comes from fight-phase state sync. The current architecture uses a host-authoritative browser simulation and connected clients subscribe to the live lobby/game state. The largest payloads are `game.units`, `game.board`, cosmetic `game.splats` / `game.effects`, and inventories/loot when they change.
 
 Optimizations already in this build:
 
 - Board state is only written during the fight when resource/NPC terrain changes mark it dirty.
 - Regular fight ticks now patch only fields whose serialized value changed.
-- Static content remains bundled in source/assets instead of being stored in Firebase per match; Firebase stores short item/unit/NPC IDs.
+- Static content remains bundled in source/assets instead of being stored in the shared match state per match; The shared match state stores short item/unit/NPC IDs.
 - Presence is heartbeat-throttled rather than written on every lobby snapshot.
 
 Future optimizations to consider before larger public playtests:
@@ -209,19 +209,19 @@ Future optimizations to consider before larger public playtests:
 - Keep logs, kill feed, market history, and result snapshots capped aggressively.
 - Add a lightweight bandwidth/debug panel that estimates serialized bytes written per tick during local tests.
 
-## Optimize Firebase v1: Network Debug Panel
+## WebSocket Store Network Debug Panel
 
-This branch adds a lightweight in-browser Firebase Network Debug panel. It instruments the app's Firebase `set`, `update`, `remove`, `get`, and `onValue` calls and estimates JSON payload sizes locally.
+This branch adds a lightweight in-browser WebSocket Store Network Debug panel. It instruments the app's shared-store `set`, `update`, `remove`, `get`, and `onValue` calls and estimates JSON payload sizes locally.
 
 Open the floating **Net** button in the lower-right corner while testing a lobby. The panel shows:
 
 - Estimated reads/downloaded and writes/uploaded for the current browser session.
-- Active Firebase listeners.
+- Active store listeners.
 - Estimated monthly read pace from the current session rate.
-- Largest Firebase paths by estimated traffic.
-- Recent Firebase events.
+- Largest store paths by estimated traffic.
+- Recent store events.
 
-These numbers are estimates only. Firebase billing also includes protocol, connection, and encryption overhead, but the panel is useful for finding high-cost paths before deeper refactors.
+These numbers are estimates only. Real network traffic also includes protocol, connection, and encryption overhead, but the panel is useful for finding high-cost paths before deeper refactors.
 
 Recommended test flow:
 
@@ -235,7 +235,7 @@ Future optimization work should use this panel to compare before/after bandwidth
 
 ## Local WebSocket Debug Panel
 
-The game includes a local-only WebSocket debug panel for testing the Quadrants WebSocket server without replacing Firebase gameplay.
+The game includes a local-only WebSocket debug panel for testing the Quadrants WebSocket server without replacing WebSocket gameplay.
 
 ### Start the local WebSocket server
 
@@ -297,11 +297,11 @@ room_update
 ping
 ```
 
-Firebase gameplay remains unchanged. The debug panel is only a local testing tool while the WebSocket migration is in progress.
+WebSocket gameplay remains unchanged. The debug panel is only a local testing tool while the WebSocket migration is in progress.
 
 ## Local WebSocket Lobby Mode
 
-The game also includes a standalone WebSocket lobby mode for testing the new server flow without replacing the normal Firebase game.
+The game also includes a standalone WebSocket lobby mode for testing the new server flow without replacing the full game flow.
 
 Start the local WebSocket server:
 
@@ -335,7 +335,7 @@ Sample snapshots
 Sample deltas
 ```
 
-The normal game URL still uses Firebase:
+The normal game URL now uses the WebSocket store:
 
 ```text
 http://localhost:5173/

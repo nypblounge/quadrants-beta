@@ -3074,7 +3074,7 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
   .npc-tracker-row { grid-template-columns: 1fr 1fr; }
 }
 
-/* Firebase Network Debug Panel */
+/* WebSocket Store Network Debug Panel */
 .network-debug {
   position: fixed;
   right: 14px;

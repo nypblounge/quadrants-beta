@@ -385,7 +385,7 @@ export function QuadrantsWsGamePreview() {
             <h2>{lobby ? `Preview room ${lobby.code}` : "WebSocket game preview"}</h2>
             <p>
               This screen joins a WebSocket room and converts it into a Quadrants-shaped lobby object.
-              It does not replace Firebase gameplay.
+              It is separate from the full lobby/game flow.
             </p>
           </div>
           <div className="lobby-code">{lobby?.code || "WS"}</div>

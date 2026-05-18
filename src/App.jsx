@@ -1,22 +1,5 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { initializeApp } from "firebase/app";
-import {
-  getDatabase,
-  ref,
-  set as firebaseSet,
-  update as firebaseUpdate,
-  onValue as firebaseOnValue,
-  onDisconnect,
-  get as firebaseGet,
-  remove as firebaseRemove,
-  serverTimestamp,
-  query,
-  orderByChild,
-  endAt,
-  limitToFirst,
-} from "firebase/database";
-import { firebaseConfig } from "./firebaseConfig";
 import ContentManager from "./ContentManager.jsx";
 import { makeDefaultContent } from "./content/defaultContent.js";
 import "./styles.css";
@@ -26,8 +9,6 @@ import { QuadrantsWsLobbyMode } from "./network/QuadrantsWsLobbyMode";
 import { QuadrantsWsGamePreview } from "./network/QuadrantsWsGamePreview";
 import { quadrantsWsStoreClient } from "./network/quadrantsWsStoreClient";
 
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
 
 if (typeof window !== "undefined") {
   window.createQuadrantsWsClient = createQuadrantsWsClient;
@@ -50,25 +31,22 @@ const SHOW_WS_GAME_PREVIEW =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("wsGamePreview") === "1";
 
-const USE_WS_FULL_GAME =
-  typeof window !== "undefined" &&
-  new URLSearchParams(window.location.search).get("wsFullGame") === "1";
 
 const NETWORK_DEBUG_STORAGE_KEY = "quadrants_network_debug_enabled_v1";
 const NETWORK_DEBUG_MAX_ENTRIES = 120;
 const NETWORK_DEBUG_EVENT = "quadrants-network-debug-updated";
 
-function sanitizeFirebaseValue(value) {
+function sanitizeStoreValue(value) {
   if (value === undefined) return null;
-  if (Array.isArray(value)) return value.map((item) => sanitizeFirebaseValue(item));
+  if (Array.isArray(value)) return value.map((item) => sanitizeStoreValue(item));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeFirebaseValue(item)]));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeStoreValue(item)]));
   }
   return value;
 }
 
 function jsonByteLength(value) {
-  const safeValue = sanitizeFirebaseValue(value);
+  const safeValue = sanitizeStoreValue(value);
   try {
     return new TextEncoder().encode(JSON.stringify(safeValue ?? null)).length;
   } catch {
@@ -80,14 +58,21 @@ function jsonByteLength(value) {
   }
 }
 
-function cleanFirebasePath(value) {
-  const text = String(value || "");
-  const marker = "/quadrants-beta-default-rtdb/";
-  if (text.includes(marker)) return text.split(marker).pop();
-  const parts = text.split("/").filter(Boolean);
-  const index = parts.findIndex((part) => part.includes("firebaseio.com") || part.includes("firebasedatabase.app"));
-  if (index >= 0) return parts.slice(index + 1).join("/") || "/";
-  return text.replace(/^https?:\/\/[^/]+\/?/, "") || "/";
+function cleanStorePath(value) {
+  if (value && typeof value === "object" && typeof value.path === "string") return value.path || "/";
+  const text = String(value || "").trim();
+  return text.replace(/^https?:\/\/[^/]+\/?/, "").replace(/^\/+|\/+$/g, "") || "/";
+}
+
+const db = { kind: "quadrants-ws-store-root" };
+
+function ref(_rootOrPath = "", childPath = undefined) {
+  const rawPath = childPath === undefined ? (_rootOrPath === db ? "" : _rootOrPath) : childPath;
+  const path = cleanStorePath(rawPath);
+  return {
+    path,
+    toString: () => path || "/",
+  };
 }
 
 function networkDebugState() {
@@ -118,7 +103,7 @@ function notifyNetworkDebugChanged() {
 function recordNetworkMetric(kind, targetRef, payload, extra = {}) {
   const state = networkDebugState();
   if (!state || !state.enabled) return;
-  const path = cleanFirebasePath(targetRef?.toString?.() || targetRef || "/");
+  const path = cleanStorePath(targetRef?.toString?.() || targetRef || "/");
   const bytes = jsonByteLength(payload);
   const now = Date.now();
   const direction = kind === "set" || kind === "update" || kind === "remove" ? "write" : "read";
@@ -149,7 +134,7 @@ function recordNetworkMetric(kind, targetRef, payload, extra = {}) {
 }
 
 function pathFromRef(targetRef) {
-  return cleanFirebasePath(targetRef?.toString?.() || targetRef || "/");
+  return cleanStorePath(targetRef?.path ?? targetRef?.toString?.() ?? targetRef ?? "/");
 }
 
 function makeStoreSnapshot(path, value) {
@@ -173,34 +158,24 @@ function finishNetworkListener(unsubscribe) {
 }
 
 function set(targetRef, value) {
-  const safeValue = sanitizeFirebaseValue(value);
+  const safeValue = sanitizeStoreValue(value);
   recordNetworkMetric("set", targetRef, safeValue);
-  if (USE_WS_FULL_GAME) return quadrantsWsStoreClient.set(pathFromRef(targetRef), safeValue);
-  return firebaseSet(targetRef, safeValue);
+  return quadrantsWsStoreClient.set(pathFromRef(targetRef), safeValue);
 }
 
 function update(targetRef, value) {
-  const safeValue = sanitizeFirebaseValue(value);
+  const safeValue = sanitizeStoreValue(value);
   recordNetworkMetric("update", targetRef, safeValue);
-  if (USE_WS_FULL_GAME) return quadrantsWsStoreClient.update(pathFromRef(targetRef), safeValue);
-  return firebaseUpdate(targetRef, safeValue);
+  return quadrantsWsStoreClient.update(pathFromRef(targetRef), safeValue);
 }
 
 function remove(targetRef) {
   recordNetworkMetric("remove", targetRef, null);
-  if (USE_WS_FULL_GAME) return quadrantsWsStoreClient.remove(pathFromRef(targetRef));
-  return firebaseRemove(targetRef);
+  return quadrantsWsStoreClient.remove(pathFromRef(targetRef));
 }
 
 function get(targetRef) {
-  if (USE_WS_FULL_GAME) {
-    return quadrantsWsStoreClient.get(pathFromRef(targetRef)).then((snap) => {
-      recordNetworkMetric("get", targetRef, snap.val());
-      return snap;
-    });
-  }
-
-  return firebaseGet(targetRef).then((snap) => {
+  return quadrantsWsStoreClient.get(pathFromRef(targetRef)).then((snap) => {
     recordNetworkMetric("get", targetRef, snap.val());
     return snap;
   });
@@ -220,19 +195,14 @@ function onValue(targetRef, callback, cancelCallbackOrListenOptions, options) {
     callback(snap);
   };
 
-  if (USE_WS_FULL_GAME) {
-    const path = pathFromRef(targetRef);
+  const path = pathFromRef(targetRef);
 
-    if (path === ".info/connected") {
-      const timerId = window.setTimeout(() => wrappedCallback(makeStoreSnapshot(path, true)), 0);
-      return finishNetworkListener(() => window.clearTimeout(timerId));
-    }
-
-    const unsubscribe = quadrantsWsStoreClient.onValue(path, wrappedCallback);
-    return finishNetworkListener(unsubscribe);
+  if (path === ".info/connected") {
+    const timerId = window.setTimeout(() => wrappedCallback(makeStoreSnapshot(path, true)), 0);
+    return finishNetworkListener(() => window.clearTimeout(timerId));
   }
 
-  const unsubscribe = firebaseOnValue(targetRef, wrappedCallback, cancelCallbackOrListenOptions, options);
+  const unsubscribe = quadrantsWsStoreClient.onValue(path, wrappedCallback);
   return finishNetworkListener(unsubscribe);
 }
 function formatBytes(bytes) {
@@ -2215,7 +2185,7 @@ function arrayFromObject(value) {
   return Object.values(value).filter(Boolean);
 }
 
-function firebaseSafeKey(value) {
+function storeSafeKey(value) {
   return String(value ?? "")
     .replace(/[.#$/\[\]]/g, "_")
     .replace(/[^A-Za-z0-9_-]/g, "_") || `k_${Date.now()}`;
@@ -2228,7 +2198,7 @@ function makeRuntimeId(prefix) {
 function objectFromArray(items, keyName = "id") {
   const out = {};
   for (const item of items) {
-    const safeKey = firebaseSafeKey(item[keyName]);
+    const safeKey = storeSafeKey(item[keyName]);
     out[safeKey] = { ...item, [keyName]: safeKey };
   }
   return out;
@@ -2406,7 +2376,7 @@ function addInventoryEntryToTeam(game, team, entry) {
 function makeGroundItem(entry, row, col, team, fightTime = 0, droppedByUnitId = null) {
   const item = itemById(entry);
   if (!item) return null;
-  const id = firebaseSafeKey(makeRuntimeId("ground"));
+  const id = storeSafeKey(makeRuntimeId("ground"));
   return {
     id,
     itemId: entry?.itemId || item.id,
@@ -2435,7 +2405,7 @@ function objectFromGroundItems(items) {
   const out = {};
   for (const item of items) {
     if (!itemById(item)) continue;
-    const id = firebaseSafeKey(item.id || makeRuntimeId("ground"));
+    const id = storeSafeKey(item.id || makeRuntimeId("ground"));
     out[id] = { ...item, id };
   }
   return out;
@@ -2760,7 +2730,7 @@ function mergeUnitArchive(existing, units) {
   const out = { ...(existing || {}) };
   for (const unit of units || []) {
     if (!unit) continue;
-    const id = firebaseSafeKey(unit.id ?? `${unit.team}_${unit.name}_${unit.style}`);
+    const id = storeSafeKey(unit.id ?? `${unit.team}_${unit.name}_${unit.style}`);
     out[id] = { ...unit, id, hp: Math.max(0, unit.hp ?? 0), timer: null };
   }
   return out;
@@ -2771,7 +2741,7 @@ function mergeLatestUnits(...groups) {
   for (const group of groups) {
     for (const unit of group || []) {
       if (!unit) continue;
-      const id = firebaseSafeKey(unit.id ?? `${unit.team}_${unit.name}_${unit.style}`);
+      const id = storeSafeKey(unit.id ?? `${unit.team}_${unit.name}_${unit.style}`);
       out[id] = { ...unit, id };
     }
   }
@@ -4280,11 +4250,11 @@ function runDevTests() {
   console.assert(targetForUnit(defender, defendGame, defendGame.bases, [defender, attackerNearBase], []) === "blue", "Defend should fall back to random target selection when base is not threatened");
   console.assert(canPlayerControlTarget({ team: "red" }, "red") && !canPlayerControlTarget({ team: "red" }, "blue"), "Players should only control and view their own team target controls");
   console.assert(damageTypeClass("melee") === "melee" && damageTypeClass("magic") === "magic" && damageTypeClass("range") === "range", "Damage splats should map to combat type colors");
-  console.assert(firebaseSafeKey("s_123_0.456") === "s_123_0_456", "Firebase runtime keys should not contain periods");
+  console.assert(storeSafeKey("s_123_0.456") === "s_123_0_456", "Store runtime keys should not contain periods");
   const keyed = objectFromArray([{ id: "s_1_0.25", ttl: 1 }]);
-  console.assert(Boolean(keyed.s_1_0_25), "Object keys written to Firebase should be sanitized");
+  console.assert(Boolean(keyed.s_1_0_25), "Object keys written to the shared store should be sanitized");
   const emptyTeamResults = { teamStats: { blue: { damage: 0, kills: 0, levels: 0, deaths: 0 } } };
-  console.assert(arrayFromObject(emptyTeamResults.teamStats.blue.units).length === 0, "Team result tabs should tolerate Firebase dropping empty units arrays");
+  console.assert(arrayFromObject(emptyTeamResults.teamStats.blue.units).length === 0, "Team result tabs should tolerate stored empty units arrays being missing");
   const dharok = makeUnit(30, "red", "dharoks", setup4);
   const fullHpMax = maxDamageRoll(dharok, null);
   dharok.hp = maxHp(dharok) - 25;
@@ -4467,15 +4437,15 @@ function NetworkDebugPanel({ compact = false }) {
   };
   return (
     <div className={`network-debug ${open ? "is-open" : ""} ${compact ? "is-compact" : ""}`}>
-      <button className="network-debug-tab" type="button" onClick={toggleOpen} title="Show Firebase bandwidth estimates">
+      <button className="network-debug-tab" type="button" onClick={toggleOpen} title="Show WebSocket store traffic estimates">
         Net {formatBytes(snapshot.totals.readBytes)}↓ {formatBytes(snapshot.totals.writeBytes)}↑
       </button>
       {open && (
         <div className="network-debug-panel">
           <div className="network-debug-header">
             <div>
-              <b>Firebase Network Debug</b>
-              <p>Local estimate only. Firebase billing includes protocol overhead, but this exposes high-cost paths.</p>
+              <b>WebSocket Store Network Debug</b>
+              <p>Local estimate only. Real network traffic includes protocol overhead, but this exposes high-cost paths.</p>
             </div>
             <button type="button" onClick={toggleOpen}>×</button>
           </div>
@@ -5203,7 +5173,6 @@ function isStaleLobby(lobby, now = Date.now()) {
 }
 
 async function cleanupStaleLobbies({ protectCode = "", force = false } = {}) {
-  if (USE_WS_FULL_GAME) return { checked: 0, removed: 0, skipped: true };
   const now = Date.now();
   if (!force) {
     const last = Number(localStorage.getItem("quadrants_lobby_cleanup_last") || 0);
@@ -5214,20 +5183,17 @@ async function cleanupStaleLobbies({ protectCode = "", force = false } = {}) {
     RESULTS_LOBBY_CLEANUP_HOURS * 60 * 60 * 1000,
     STALE_LOBBY_CLEANUP_HOURS * 60 * 60 * 1000,
   );
-  const cleanupQuery = query(
-    ref(db, "lobbies"),
-    orderByChild("lastActivityAt"),
-    endAt(now - earliestCleanupWindowMs),
-    limitToFirst(LOBBY_CLEANUP_BATCH_LIMIT),
-  );
-  const snap = await get(cleanupQuery);
+  const snap = await get(ref(db, "lobbies"));
   const lobbies = snap.val() || {};
+  const staleCandidates = Object.entries(lobbies)
+    .filter(([code, lobby]) => !(protectCode && code === protectCode) && lobbyLastActivityAt(lobby) <= now - earliestCleanupWindowMs)
+    .sort(([, a], [, b]) => lobbyLastActivityAt(a) - lobbyLastActivityAt(b))
+    .slice(0, LOBBY_CLEANUP_BATCH_LIMIT);
   const updates = {};
   let checked = 0;
   let removed = 0;
-  for (const [code, lobby] of Object.entries(lobbies)) {
+  for (const [code, lobby] of staleCandidates) {
     checked += 1;
-    if (protectCode && code === protectCode) continue;
     if (isStaleLobby(lobby, now)) {
       updates[`lobbies/${code}`] = null;
       removed += 1;
@@ -6607,7 +6573,7 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
             ))}
             {npcTrackerRows(game).length === 0 && <p className="muted">No NPCs configured to spawn.</p>}
           </div>
-          <p className="muted">Bodies counts NPCs created. Respawns counts successful timer triggers. Both also infer from live/dead NPCs if Firebase counters lag.</p>
+          <p className="muted">Bodies counts NPCs created. Respawns counts successful timer triggers. Both also infer from live/dead NPCs if network counters lag.</p>
         </details>
       )}
 
@@ -7253,7 +7219,7 @@ export default function QuadrantsOnline() {
 
   useEffect(() => {
     cleanupStaleLobbies({ protectCode: lobbyCode }).then((result) => {
-      if (result?.removed) setCleanupStatus(`Cleaned ${result.removed} old lobby${result.removed === 1 ? "" : "ies"} from Firebase.`);
+      if (result?.removed) setCleanupStatus(`Cleaned ${result.removed} old lobby${result.removed === 1 ? "" : "ies"} from the server store.`);
     }).catch((err) => {
       console.warn("Lobby cleanup failed", err);
     });
@@ -7330,7 +7296,6 @@ export default function QuadrantsOnline() {
     const connectedRef = ref(db, ".info/connected");
     const playerRef = ref(db, `lobbies/${lobbyCode}/players/${playerId}`);
     let heartbeatId = null;
-    let disconnectReady = false;
     const writePresence = () => {
       const now = Date.now();
       return update(ref(db), {
@@ -7343,10 +7308,6 @@ export default function QuadrantsOnline() {
     const unsub = onValue(connectedRef, (snap) => {
       if (snap.val() === true) {
         writePresence();
-        if (!USE_WS_FULL_GAME && !disconnectReady) {
-          disconnectReady = true;
-          onDisconnect(playerRef).update({ connected: false, lastSeen: serverTimestamp() });
-        }
         if (!heartbeatId) heartbeatId = window.setInterval(writePresence, 12000);
       } else if (heartbeatId) {
         window.clearInterval(heartbeatId);
@@ -7356,14 +7317,12 @@ export default function QuadrantsOnline() {
     return () => {
       unsub();
       if (heartbeatId) window.clearInterval(heartbeatId);
-      if (USE_WS_FULL_GAME) {
-        const now = Date.now();
-        update(ref(db), {
-          [`lobbies/${lobbyCode}/players/${playerId}/connected`]: false,
-          [`lobbies/${lobbyCode}/players/${playerId}/lastSeen`]: now,
-          [`lobbies/${lobbyCode}/lastActivityAt`]: now,
-        }).catch(() => {});
-      }
+      const now = Date.now();
+      update(ref(db), {
+        [`lobbies/${lobbyCode}/players/${playerId}/connected`]: false,
+        [`lobbies/${lobbyCode}/players/${playerId}/lastSeen`]: now,
+        [`lobbies/${lobbyCode}/lastActivityAt`]: now,
+      }).catch(() => {});
     };
   }, [lobbyCode, playerId, playerExistsInLobby, browserId]);
 
@@ -7408,7 +7367,7 @@ export default function QuadrantsOnline() {
         // Bandwidth optimization: the host already has the latest lobby data from
         // the split top-level listeners above. Avoid a full /lobbies/{code} get on
         // every fight tick; that was re-downloading the entire lobby snapshot and
-        // showed up as one of the largest Firebase paths in the Net panel.
+        // showed up as one of the largest shared-store paths in the Net panel.
         const latest = latestLobbyRef.current;
         if (!latest || latest.phase !== "fight" || latest.hostId !== playerId) return;
         const now = Date.now();
@@ -7432,7 +7391,7 @@ export default function QuadrantsOnline() {
       // some nested structures while simulating. If we pass latest.game directly,
       // the diff code below can miss changes because previousGame was mutated too.
       // That caused synced fields such as NPC loot inventories and NPC spawn
-      // counters to sometimes not be written to Firebase.
+      // counters to sometimes not be written to the shared store.
       const previousGameSnapshot = latest.game || {};
       const simulationGame = JSON.parse(JSON.stringify(previousGameSnapshot || {}));
       const nextGame = stepGame(simulationGame, TICK_SECONDS);
@@ -7523,14 +7482,14 @@ export default function QuadrantsOnline() {
   }, [selectedResource, game?.board, phase]);
 
   async function runLobbyCleanup() {
-    setCleanupStatus("Checking Firebase for old lobbies...");
+    setCleanupStatus("Checking the server store for old lobbies...");
     try {
       const result = await cleanupStaleLobbies({ protectCode: lobbyCode, force: true });
-      if (result.removed) setCleanupStatus(`Cleaned ${result.removed} old lobby${result.removed === 1 ? "" : "ies"} from Firebase.`);
+      if (result.removed) setCleanupStatus(`Cleaned ${result.removed} old lobby${result.removed === 1 ? "" : "ies"} from the server store.`);
       else setCleanupStatus(`No old lobbies needed cleanup. Checked ${result.checked || 0}.`);
     } catch (err) {
       console.error(err);
-      setCleanupStatus("Could not clean old lobbies. Check Firebase rules/network and try again.");
+      setCleanupStatus("Could not clean old lobbies. Check the WebSocket server/network and try again.");
     }
   }
 
@@ -8050,7 +8009,7 @@ export default function QuadrantsOnline() {
         // returned gear was added to loot, stacking when possible
       } else {
         const market = makeMarketItem(equipped, player.team);
-        if (market) marketUpdates[`lobbies/${lobbyCode}/game/marketItems/${firebaseSafeKey(market.marketId)}`] = market;
+        if (market) marketUpdates[`lobbies/${lobbyCode}/game/marketItems/${storeSafeKey(market.marketId)}`] = market;
         autoSellGold += sellValueForItem(equipped);
       }
     }
@@ -8093,7 +8052,7 @@ export default function QuadrantsOnline() {
     const sellQty = Math.max(1, Math.min(available, Math.round(Number(quantity) || 1)));
     const market = makeMarketItem(picked, player.team, sellQty);
     if (!market) return;
-    const marketKey = firebaseSafeKey(market.marketId);
+    const marketKey = storeSafeKey(market.marketId);
     const refund = sellValueForItem(picked) * sellQty;
     removeInventoryQuantity(inventory, inventoryIndex, sellQty);
     await update(ref(db), {
@@ -8275,7 +8234,7 @@ export default function QuadrantsOnline() {
     removeOneInventoryEntry(inventory, inventoryIndex);
     await update(ref(db), {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
-      [`lobbies/${lobbyCode}/game/groundItems/${firebaseSafeKey(ground.id)}`]: ground,
+      [`lobbies/${lobbyCode}/game/groundItems/${storeSafeKey(ground.id)}`]: ground,
       [`lobbies/${lobbyCode}/game/log`]: [`${unit.name} dropped ${item.name}.`, ...(game.log || [])].slice(0, 8),
     });
   }
@@ -8658,7 +8617,7 @@ export default function QuadrantsOnline() {
 
   async function deleteLobby() {
     if (!lobbyCode || !isHost) return;
-    if (confirm("Delete this lobby from Firebase?")) {
+    if (confirm("Delete this lobby from the server store?")) {
       await remove(ref(db, `lobbies/${lobbyCode}`));
       localStorage.removeItem("quadrants_lobby_code");
       setLobbyCode("");

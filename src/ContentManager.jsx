@@ -388,7 +388,7 @@ function ImageDrop({ value, preview, onPathChange, onPreviewChange, label = "Ima
       </label>
       <input type="file" accept="image/*" onChange={(e) => handleFiles(e.target.files)} />
       {preview ? <p className="success tiny-note">Preview loaded. Copy this image into <code>public/assets</code> before using the exported file in the game.</p> : null}
-      <p className="muted tiny-note">Images are exported as file paths, not Firebase data. Put image files in <code>public/assets</code>.</p>
+      <p className="muted tiny-note">Images are exported as file paths, not server data. Put image files in <code>public/assets</code>.</p>
     </div>
   );
 }
