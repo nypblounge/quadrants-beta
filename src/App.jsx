@@ -5888,12 +5888,13 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
     const mid = midOf(size);
     const start = mid - radius;
     const tiles = radius * 2 + 1;
-    const insetPx = 1;
+    const insetX = 2;
+    const insetY = 2;
     return {
-      left: "calc(" + start + " * var(--tile-size) + " + insetPx + "px)",
-      top: "calc(" + start + " * var(--tile-size) + " + insetPx + "px)",
-      width: "calc(" + tiles + " * var(--tile-size) - " + (insetPx * 2) + "px)",
-      height: "calc(" + tiles + " * var(--tile-size) - " + (insetPx * 2) + "px)",
+      left: "calc(" + start + " * var(--tile-size) + " + insetX + "px)",
+      top: "calc(" + start + " * var(--tile-size) + " + insetY + "px)",
+      width: "calc(" + tiles + " * var(--tile-size) - " + (insetX * 2) + "px)",
+      height: "calc(" + tiles + " * var(--tile-size) - " + (insetY * 2) + "px)",
     };
   }, [setup, size]);
   const constrainView = (next) => {
