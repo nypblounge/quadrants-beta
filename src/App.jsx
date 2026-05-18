@@ -6025,6 +6025,14 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const resourceSelectedHere = selectedResource && selectedResource.row === cell.row && selectedResource.col === cell.col && !fogged;
           const groundItemTitle = cellGroundItems.length ? ` • Ground: ${cellGroundItems.map((entry) => `${itemLabel(entry)} (${groundItemRemainingSeconds(entry, game.fightTime || 0)}s)`).join(", ")}` : "";
           const title = targetUnit ? `${unitHoverText(targetUnit)}${groundItemTitle}` : fogged ? "Hidden enemy tile" : `${cell.row},${cell.col} owner:${cell.owner} type:${cell.type}${selectedTarget && targetHere ? ` • ${selectedTarget.label}` : ""}${cell.regrowType ? ` regrows ${cell.regrowType} in ${Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s` : ""}${groundItemTitle}`;
+          const isKothHillCell = !fogged && (setup.gameMode || "classic") === "king_hill" && isHillCell(cell.row, cell.col, setup);
+          const hillBorderClasses = isKothHillCell ? [
+            "hill-cell",
+            !isHillCell(cell.row - 1, cell.col, setup) ? "hill-edge-top" : "",
+            !isHillCell(cell.row + 1, cell.col, setup) ? "hill-edge-bottom" : "",
+            !isHillCell(cell.row, cell.col - 1, setup) ? "hill-edge-left" : "",
+            !isHillCell(cell.row, cell.col + 1, setup) ? "hill-edge-right" : "",
+          ].filter(Boolean).join(" ") : "";
           const resourceType = !fogged && (cell.type === "tree" || cell.type === "rock") ? cell.type : null;
           const resourceMax = resourceType ? resourceMaxHp(resourceType) : 0;
           const resourceHp = resourceType ? resourceCurrentHp(cell, resourceType) : 0;
@@ -6049,7 +6057,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                   onGroundItemsContextMenu(e, cellGroundItems, cell);
                 }
               }}
-              className={`cell ${firstUnitVisualOffset ? "moving-unit-cell" : ""} ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${isHillCell(cell.row, cell.col, setup) && (setup.gameMode || "classic") === "king_hill" ? "hill-cell" : ""} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
+              className={`cell ${firstUnitVisualOffset ? "moving-unit-cell" : ""} ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${hillBorderClasses} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
               style={style}
               title={title}
             >
@@ -6279,8 +6287,8 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
             }}
           >
             <div className="market-drop-hint">Drop loot here to sell it for 50% value. Sold items appear in the Shop for any player to buy. Expand an item to view stats and buy it.</div>
-            {groupedMarketItemsArray(game).length === 0 && shopItemEntries(game).length === 0 && <p className="muted empty-shop-note">No shop items are stocked yet. Future loot sold by players will appear here.</p>}
-            {shopItemEntries(game).map(({ item, itemId, price, remaining, infinite }) => (
+            {marketShopItems.length === 0 && stockShopItems.length === 0 && <p className="muted empty-shop-note">No shop items are stocked yet. Future loot sold by players will appear here.</p>}
+            {stockShopItems.map(({ item, itemId, price, remaining, infinite }) => (
               <details className="gear-card shop-item-details" key={`shop-${itemId}`}>
                 <summary className="shop-item-summary">
                   <GearIcon item={{ itemId }} slot={item.slot} size="lg" />
@@ -6296,7 +6304,7 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
                 </div>
               </details>
             ))}
-            {groupedMarketItemsArray(game).map((entry) => {
+            {marketShopItems.map((entry) => {
               const item = itemById(entry);
               const firstKey = entry.keys?.[0] || entry.key;
               return (
@@ -6755,6 +6763,16 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
 }
 
 function FightGearShop({ game, onBuyMarketItem, onSellInventoryItem }) {
+  const [shopSearch, setShopSearch] = useState('');
+  const shopQuery = shopSearch.trim().toLowerCase();
+  const shopMatches = (entry) => {
+    const item = entry?.item || itemById(entry);
+    if (!shopQuery) return true;
+    const slotLabel = EQUIPMENT_SLOT_META[item?.slot]?.name || item?.slot || '';
+    return [item?.name, item?.type, slotLabel, item?.notes].filter(Boolean).join(' ').toLowerCase().includes(shopQuery);
+  };
+  const stockShopItems = shopItemEntries(game).filter(shopMatches);
+  const marketShopItems = groupedMarketItemsArray(game).filter(shopMatches);
   return (
     <div
       className="gear-shop gear-market-dropzone fight-gear-shop"
@@ -6765,9 +6783,12 @@ function FightGearShop({ game, onBuyMarketItem, onSellInventoryItem }) {
         if (Number.isFinite(fromIndex)) onSellInventoryItem?.(fromIndex);
       }}
     >
+      <div className='shop-toolbar fight-shop-toolbar'>
+        <input className='shop-search-input' value={shopSearch} onChange={(e) => setShopSearch(e.target.value)} placeholder='Search gear...' />
+      </div>
       <div className="market-drop-hint">Drop loot here to sell it. Expand an item to view stats and buy it.</div>
-      {groupedMarketItemsArray(game).length === 0 && shopItemEntries(game).length === 0 && <p className="muted empty-shop-note">No shop items are stocked yet.</p>}
-      {shopItemEntries(game).map(({ item, itemId, price, remaining, infinite }) => (
+      {marketShopItems.length === 0 && stockShopItems.length === 0 && <p className="muted empty-shop-note">No shop items are stocked yet.</p>}
+      {stockShopItems.map(({ item, itemId, price, remaining, infinite }) => (
         <details className="gear-card shop-item-details" key={`fight-shop-${itemId}`}>
           <summary className="shop-item-summary">
             <GearIcon item={{ itemId }} slot={item.slot} size="lg" />
@@ -6783,7 +6804,7 @@ function FightGearShop({ game, onBuyMarketItem, onSellInventoryItem }) {
           </div>
         </details>
       ))}
-      {groupedMarketItemsArray(game).map((entry) => {
+      {marketShopItems.map((entry) => {
         const item = itemById(entry);
         const firstKey = entry.keys?.[0] || entry.key;
         return (
@@ -8211,12 +8232,22 @@ export default function QuadrantsOnline() {
       x: event.clientX,
       y: event.clientY,
       title: item.name,
-      items: [{
-        icon: "⬇️",
-        label: canDrop ? `Drop under ${unit.name}` : "Select one of your living units to drop",
-        disabled: !canDrop,
-        action: () => dropInventoryItem(inventoryIndex),
-      }],
+      items: [
+        {
+          icon: "⬇️",
+          label: canDrop ? `Drop under ${unit.name}` : "Select one of your living units to drop",
+          disabled: !canDrop,
+          action: () => dropInventoryItem(inventoryIndex),
+        },
+        { icon: "💰", label: `Sell 1 for ${sellValueForItem(picked)}g`, action: () => sellInventoryItem(inventoryIndex, 1) },
+        { icon: "🔢", label: "Sell X...", disabled: itemQuantity(picked) <= 1, action: () => {
+          const raw = window.prompt(`Sell how many ${item.name}?`, String(itemQuantity(picked)));
+          if (raw == null) return;
+          const amount = Math.max(1, Math.min(itemQuantity(picked), Math.round(Number(raw) || 0)));
+          if (amount > 0) sellInventoryItem(inventoryIndex, amount);
+        } },
+        { icon: "🧺", label: `Sell all${itemQuantity(picked) > 1 ? ` x${itemQuantity(picked)}` : ""} for ${sellValueForItem(picked) * itemQuantity(picked)}g`, action: () => sellInventoryItem(inventoryIndex, itemQuantity(picked)) },
+      ],
     });
   }
 
