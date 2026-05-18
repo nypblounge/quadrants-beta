@@ -6510,13 +6510,14 @@ function ResourceInfoCard({ game, selectedResource, onClose }) {
   );
 }
 
-function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, selectedResource, setSelectedResource, onUpdateUnit, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem, onUnequipItem }) {
+function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, selectedResource, setSelectedResource, onUpdateUnit, pendingManualTargetUnitId, onBeginManualTarget, onEquipItem, onUnequipItem, onBuyMarketItem, onSellInventoryItem }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const units = arrayFromObject(game.units);
   const respawns = arrayFromObject(game.respawnQueue);
   const selectedUnit = units.find((u) => u.id === selectedUnitId) || respawns.find((u) => u.id === selectedUnitId) || null;
   const carriers = units.filter((u) => u.hp > 0 && u.carryingFlagTeam);
+  const myTeam = player?.team;
 
   return (
     <aside className="side-panel fight-left-panel">
@@ -6530,6 +6531,14 @@ function FightLeftPanel({ lobby, player, selectedUnitId, setSelectedUnitId, sele
           <p className="muted">Click any active unit, tree, rock, or regrowing resource tile to view details.</p>
         )}
       </section>
+
+      {myTeam && (
+        <details className="card compact collapsible-card fight-shop-card" open>
+          <summary><h3>Gear Shop</h3></summary>
+          <div className="team-status fight-gold-row"><span>Gold</span><Pill>{game.gold?.[myTeam] ?? 0}g</Pill></div>
+          <FightGearShop game={game} onBuyMarketItem={onBuyMarketItem} onSellInventoryItem={onSellInventoryItem} />
+        </details>
+      )}
 
       {(game.setup.gameMode === "capture_flag") && (
         <section className="card compact">
@@ -6745,7 +6754,63 @@ function UnitInfoCard({ lobby, unit, player, onUpdateUnit, onClose, pendingManua
   );
 }
 
-function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, selectedUnitId, onSelectUnit, onEquipItem, onInventoryContextMenu }) {
+function FightGearShop({ game, onBuyMarketItem, onSellInventoryItem }) {
+  return (
+    <div
+      className="gear-shop gear-market-dropzone fight-gear-shop"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        const fromIndex = Number(e.dataTransfer.getData("text/qb-inventory-index"));
+        if (Number.isFinite(fromIndex)) onSellInventoryItem?.(fromIndex);
+      }}
+    >
+      <div className="market-drop-hint">Drop loot here to sell it. Expand an item to view stats and buy it.</div>
+      {groupedMarketItemsArray(game).length === 0 && shopItemEntries(game).length === 0 && <p className="muted empty-shop-note">No shop items are stocked yet.</p>}
+      {shopItemEntries(game).map(({ item, itemId, price, remaining, infinite }) => (
+        <details className="gear-card shop-item-details" key={`fight-shop-${itemId}`}>
+          <summary className="shop-item-summary">
+            <GearIcon item={{ itemId }} slot={item.slot} size="lg" />
+            <div>
+              <b>{item.name}</b>
+              <span>{price}g • {item.type || "item"} • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot} • {infinite ? "unlimited stock" : `stock ${remaining}`}</span>
+            </div>
+          </summary>
+          <div className="shop-item-expanded">
+            <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
+            {item.notes && <small>{item.notes}</small>}
+            <Button type="button" onClick={() => onBuyMarketItem?.({ itemId, price, shop: true })}>Buy for {price}g</Button>
+          </div>
+        </details>
+      ))}
+      {groupedMarketItemsArray(game).map((entry) => {
+        const item = itemById(entry);
+        const firstKey = entry.keys?.[0] || entry.key;
+        return (
+          <details className="gear-card stacked-gear-card shop-item-details" key={`fight-market-${item.id}-${entry.price}`}>
+            <summary className="shop-item-summary">
+              <div className="gear-stack-icon-wrap">
+                <GearIcon item={entry} slot={item.slot} size="lg" />
+                <span className="gear-stock-badge">x{entry.stock}</span>
+              </div>
+              <div>
+                <b>{item.name}</b>
+                <span>{entry.price ?? item.cost}g • {item.type || "item"} • {EQUIPMENT_SLOT_META[item.slot]?.name || item.slot}{item.twoHanded ? " • 2H" : ""} • stock {entry.stock}</span>
+              </div>
+            </summary>
+            <div className="shop-item-expanded">
+              <GearBonusList bonuses={{ ...emptyGearBonuses(), ...(item.bonuses || {}) }} />
+              {item.notes && <small>{item.notes}</small>}
+              <Button type="button" onClick={() => onBuyMarketItem?.(firstKey)}>Buy for {entry.price ?? item.cost}g</Button>
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, selectedUnitId, onSelectUnit, onEquipItem, onInventoryContextMenu, onBuyMarketItem, onSellInventoryItem }) {
   const game = lobby.game;
   const teams = activeTeams(game.setup);
   const units = arrayFromObject(game.units);
@@ -6789,9 +6854,9 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
       </details>
 
       {myTeam && (
-        <section className="card compact">
+        <details className="card compact collapsible-card" open>
+          <summary><h3>Your Units</h3></summary>
           <div className="section-title">
-            <h3>Your Units</h3>
             <div className="mini-tabs">
               <button className={rightTab === "units" ? "active" : ""} onClick={() => setRightTab("units")}>Units</button>
               <button className={rightTab === "loot" ? "active" : ""} onClick={() => setRightTab("loot")}>Loot</button>
@@ -6848,7 +6913,7 @@ function FightPanel({ lobby, player, showStats, setShowStats, onSetOrder, select
               </div>
             </div>
           )}
-        </section>
+        </details>
       )}
     </aside>
   );
@@ -7986,8 +8051,8 @@ export default function QuadrantsOnline() {
 
 
   async function sellInventoryItem(inventoryIndex, quantity = 1) {
-    if (!lobby || lobby.phase !== "buy" || !player?.team) return;
-    if (readyMap(lobby, "buy")[playerId]) return;
+    if (!lobby || !["buy", "fight"].includes(lobby.phase) || !player?.team) return;
+    if (lobby.phase === "buy" && readyMap(lobby, "buy")[playerId]) return;
     const inventory = getTeamInventory(game, player.team);
     const picked = inventory[inventoryIndex];
     const item = itemById(picked);
@@ -8036,8 +8101,8 @@ export default function QuadrantsOnline() {
   }
 
   async function buyMarketItem(marketKey) {
-    if (!lobby || lobby.phase !== "buy" || !player?.team) return;
-    if (readyMap(lobby, "buy")[playerId]) return;
+    if (!lobby || !["buy", "fight"].includes(lobby.phase) || !player?.team) return;
+    if (lobby.phase === "buy" && readyMap(lobby, "buy")[playerId]) return;
     const shopBuy = typeof marketKey === "object" && marketKey?.shop;
     const listing = shopBuy ? { itemId: marketKey.itemId, price: marketKey.price } : game.marketItems?.[marketKey];
     const item = itemById(listing);
@@ -8678,7 +8743,7 @@ export default function QuadrantsOnline() {
 
       {phase === "fight" && (
         <main className="fight-shell">
-          <FightLeftPanel lobby={lobby} player={player} selectedUnitId={selectedUnitId} setSelectedUnitId={setSelectedUnitId} selectedResource={selectedResource} setSelectedResource={setSelectedResource} onUpdateUnit={updateFightUnitConfig} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); setPendingManualTargetUnitId(unitId); }} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} />
+          <FightLeftPanel lobby={lobby} player={player} selectedUnitId={selectedUnitId} setSelectedUnitId={setSelectedUnitId} selectedResource={selectedResource} setSelectedResource={setSelectedResource} onUpdateUnit={updateFightUnitConfig} pendingManualTargetUnitId={pendingManualTargetUnitId} onBeginManualTarget={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); setPendingManualTargetUnitId(unitId); }} onEquipItem={equipInventoryItem} onUnequipItem={unequipUnitItem} onBuyMarketItem={buyMarketItem} onSellInventoryItem={sellInventoryItem} />
           <section className={`board-card ${pendingManualTargetUnitId ? "manual-target-active" : ""}`}>
             {pendingManualTargetUnitId && <div className="manual-target-banner">Select target for {game?.units?.[pendingManualTargetUnitId]?.name || "unit"}: click an enemy unit to attack, a road/base tile to move, or a matching tree/rock to chop/mine.</div>}
             {fightLooksFrozen && (
@@ -8689,7 +8754,7 @@ export default function QuadrantsOnline() {
             <BoardView lobby={lobby} player={player} selectedTool={selectedTool} onCellClick={handleFightCellClick} onUnitClick={handleFightUnitClick} selectedUnitId={selectedUnitId} selectedResource={selectedResource} visualToggles={visualToggles} onGroundItemsContextMenu={openGroundItemsContextMenu} onBoardContextMenu={openBoardContextMenu} />
             {showStats && <FightStats lobby={lobby} player={player} />}
           </section>
-          <FightPanel lobby={lobby} player={player} showStats={showStats} setShowStats={setShowStats} onSetOrder={setOrder} selectedUnitId={selectedUnitId} onSelectUnit={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); }} onEquipItem={equipInventoryItem} onInventoryContextMenu={openInventoryContextMenu} />
+          <FightPanel lobby={lobby} player={player} showStats={showStats} setShowStats={setShowStats} onSetOrder={setOrder} selectedUnitId={selectedUnitId} onSelectUnit={(unitId) => { setSelectedUnitId(unitId); setSelectedResource(null); }} onEquipItem={equipInventoryItem} onInventoryContextMenu={openInventoryContextMenu} onBuyMarketItem={buyMarketItem} onSellInventoryItem={sellInventoryItem} />
         </main>
       )}
 
