@@ -5882,6 +5882,19 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
   const selectedTarget = useMemo(() => selectedUnit ? selectedTargetPreview(game, selectedUnit, activeTeam) : null, [game, selectedUnit, activeTeam]);
   const projectileEffects = effects.filter((e) => e.type !== "spawn" && (combatType(e.style) === "range" || combatType(e.style) === "magic"));
   const reachableBuildKeys = useMemo(() => activeTeam && lobby.phase === "build" ? reachableRoadKeys(game.board, activeTeam, setup) : new Set(), [game.board, activeTeam, lobby.phase, setup]);
+  const hillOutlineStyle = useMemo(() => {
+    if ((setup.gameMode || "classic") !== "king_hill") return null;
+    const radius = centerRadiusFor(setup);
+    const mid = midOf(size);
+    const start = mid - radius;
+    const tiles = radius * 2 + 1;
+    return {
+      left: "calc(" + start + " * var(--tile-size))",
+      top: "calc(" + start + " * var(--tile-size))",
+      width: "calc(" + tiles + " * var(--tile-size))",
+      height: "calc(" + tiles + " * var(--tile-size))",
+    };
+  }, [setup, size]);
   const constrainView = (next) => {
     const wrap = wrapRef.current;
     const board = boardRef.current;
@@ -6025,14 +6038,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
           const resourceSelectedHere = selectedResource && selectedResource.row === cell.row && selectedResource.col === cell.col && !fogged;
           const groundItemTitle = cellGroundItems.length ? ` • Ground: ${cellGroundItems.map((entry) => `${itemLabel(entry)} (${groundItemRemainingSeconds(entry, game.fightTime || 0)}s)`).join(", ")}` : "";
           const title = targetUnit ? `${unitHoverText(targetUnit)}${groundItemTitle}` : fogged ? "Hidden enemy tile" : `${cell.row},${cell.col} owner:${cell.owner} type:${cell.type}${selectedTarget && targetHere ? ` • ${selectedTarget.label}` : ""}${cell.regrowType ? ` regrows ${cell.regrowType} in ${Math.max(0, Math.ceil((cell.regrowAt ?? 0) - (game.fightTime || 0)))}s` : ""}${groundItemTitle}`;
-          const isKothHillCell = !fogged && (setup.gameMode || "classic") === "king_hill" && isHillCell(cell.row, cell.col, setup);
-          const hillBorderClasses = isKothHillCell ? [
-            "hill-cell",
-            !isHillCell(cell.row - 1, cell.col, setup) ? "hill-edge-top" : "",
-            !isHillCell(cell.row + 1, cell.col, setup) ? "hill-edge-bottom" : "",
-            !isHillCell(cell.row, cell.col - 1, setup) ? "hill-edge-left" : "",
-            !isHillCell(cell.row, cell.col + 1, setup) ? "hill-edge-right" : "",
-          ].filter(Boolean).join(" ") : "";
+          const hillCellClass = !fogged && (setup.gameMode || "classic") === "king_hill" && isHillCell(cell.row, cell.col, setup) ? "hill-cell" : "";
           const resourceType = !fogged && (cell.type === "tree" || cell.type === "rock") ? cell.type : null;
           const resourceMax = resourceType ? resourceMaxHp(resourceType) : 0;
           const resourceHp = resourceType ? resourceCurrentHp(cell, resourceType) : 0;
@@ -6057,7 +6063,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
                   onGroundItemsContextMenu(e, cellGroundItems, cell);
                 }
               }}
-              className={`cell ${firstUnitVisualOffset ? "moving-unit-cell" : ""} ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${hillBorderClasses} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
+              className={`cell ${firstUnitVisualOffset ? "moving-unit-cell" : ""} ${largeUnitAnchor ? "large-unit-anchor-cell" : ""} ${hasSplats ? "has-splats" : ""} ${hasSpawnIndicators ? "spawn-anchor-cell" : ""} ${hiddenUnused ? "hidden-cell" : ""} ${buildHidden ? "build-hidden-cell" : ""} ${hillCellClass} ${cell.owner === activeTeam && lobby.phase === "build" ? "own-cell" : ""} ${cell.owner === "neutral" && lobby.phase === "build" ? "neutral-cell" : ""} ${cell.owner === "void" && visibleType === "empty" ? "void-cell" : ""} ${cellGroundItems.length ? "has-ground-items" : ""} ${inHoverRange ? "range-preview" : ""} ${inBuildPath ? "path-preview" : ""} ${selectedHere ? "selected-unit-cell" : ""} ${resourceSelectedHere ? "selected-resource-cell" : ""} ${targetHere ? `selected-target-cell target-${selectedTarget.kind}` : ""}`}
               style={style}
               title={title}
             >
@@ -6113,6 +6119,7 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
             </button>
           );
         })}
+        {hillOutlineStyle && <div className="hill-zone-outline" style={hillOutlineStyle} />}
       </div>
 
       <svg className="projectiles" viewBox={`0 0 ${size} ${size}`} preserveAspectRatio="none">
