@@ -2915,6 +2915,7 @@ function normalizedNpcAttackOption(unit, option = {}) {
     attackRange: Math.max(1, Math.round(Number(option.attackRange ?? option.range ?? style.range ?? 1))),
     attackSpeed: Math.max(1, Math.round(Number(option.attackSpeed ?? option.attackTicks ?? style.attackTicks ?? 4))),
     special: option.special || "",
+    specialInterval: option.specialInterval === "" || option.specialInterval == null ? undefined : Math.max(1, Number(option.specialInterval) || 1),
     maxMultiplier: option.maxMultiplier == null ? undefined : Math.max(1, Number(option.maxMultiplier) || 1),
     protectedMaxMultiplier: option.protectedMaxMultiplier == null ? undefined : Math.max(0, Number(option.protectedMaxMultiplier) || 0),
   };
@@ -3240,7 +3241,7 @@ function resolveUnitHit(attacker, target) {
   if (!rollAttack(attacker, target.style, target)) {
     attacker.misses = (attacker.misses ?? 0) + 1;
     grantXp(target, "defence", 1);
-    return { damage: 0, hit: false };
+    return { damage: 0, hit: false, maxHit: 0, isMaxHit: false };
   }
   const maxHit = maxDamageRoll(attacker, target.style, target);
   const rolledDamage = rollDamage(attacker, target.style, target);
@@ -3704,7 +3705,7 @@ function stepGame(game, dt) {
     rolls.forEach((roll) => addSplat(target, roll.damage ?? 0, team, style, (roll.damage ?? 0) > 0 ? String(roll.damage ?? 0) : '0', Boolean(roll.isMaxHit || ((roll.damage ?? 0) > 0 && roll.maxHit && (roll.damage ?? 0) >= roll.maxHit))));
   };
   const addEffect = (from, target, team, style) => effects.push({ id: makeRuntimeId("e"), fromRow: from.row, fromCol: from.col, row: target.row, col: target.col, team, style, ttl: 0.8 });
-  const rollJadSpecialDamage = (jad, target, specialStyle) => {
+  const rollJadSpecialDamage = (jad, target, specialStyle, attack = null) => {
     const attackerStats = jad?.stats || {};
     const targetStats = target?.stats || {};
     const offenseStat = specialStyle === "magic" ? "magic" : "range";
@@ -3712,11 +3713,11 @@ function stepGame(game, dt) {
     const offense = (attackerStats[offenseStat]?.level ?? attackerStats[offenseStat] ?? 1);
     let chance = 0.72 + (offense - targetDefence) / 220;
     chance = Math.max(0.15, Math.min(0.95, chance));
-    if (Math.random() > chance) return { damage: 0, hit: false };
-    const base = Math.max(1, Number(styleDefinition(jad.style).baseDamage ?? 50));
+    if (Math.random() > chance) return { damage: 0, hit: false, maxHit: 0, isMaxHit: false };
+    const base = Math.max(1, Number((attack?.baseDamage ?? styleDefinition(jad.style).baseDamage) ?? 50));
     const maxHit = Math.max(1, Math.floor(base * (0.65 + offense / 100)));
     const damage = applyUnitDamage(jad, target, 1 + Math.floor(Math.random() * maxHit), specialStyle);
-    return { damage, hit: damage > 0 };
+    return { damage, hit: damage > 0, maxHit, isMaxHit: damage > 0 && damage >= maxHit };
   };
   const handleUnitLastKill = (unit) => {
     if (!unit?.lastKill) return;
@@ -3775,21 +3776,25 @@ function stepGame(game, dt) {
 
   const processJadSpecial = (jad) => {
     if (jad.style !== "tz_tok_jad" || jad.team !== "npc" || jad.hp <= 0) return;
-    if (jad.jadNextSpecialAt == null) jad.jadNextSpecialAt = fightTime + JAD_SPECIAL_INTERVAL;
+    const editableSpecials = npcAttackOptions(jad).filter((attack) => attack.special === "jad_shockwave").map((attack) => normalizedNpcAttackOption(jad, attack));
+    const attack = editableSpecials.length ? editableSpecials[Math.floor(Math.random() * editableSpecials.length)] : null;
+    const specialInterval = Math.max(1, Number(attack?.specialInterval || attack?.attackSpeed || JAD_SPECIAL_INTERVAL));
+    jad.jadSpecialInterval = specialInterval;
+    if (jad.jadNextSpecialAt == null) jad.jadNextSpecialAt = fightTime + specialInterval;
     if (fightTime + 0.0001 < jad.jadNextSpecialAt) return;
-    jad.jadNextSpecialAt = fightTime + JAD_SPECIAL_INTERVAL;
-    const specialStyle = Math.random() < 0.5 ? "range" : "magic";
-    const range = Math.max(1, unitAttackRange(jad));
+    jad.jadNextSpecialAt = fightTime + specialInterval;
+    const specialStyle = attack?.combatType || (Math.random() < 0.5 ? "range" : "magic");
+    const range = Math.max(1, attack?.attackRange || unitAttackRange(jad));
     const visibleTargets = units.filter((target) => {
       if (target.hp <= 0 || !areHostileTeams(jad.team, target.team, setup) || !activeTeams(setup).includes(target.team)) return false;
       if (unitDistance(jad, target) > range) return false;
       return lineClear(board, jad, nearestTargetCell(jad, target), setup);
     });
     if (!visibleTargets.length) return;
-    const attackName = specialStyle === "magic" ? "Magic" : "Ranged";
+    const attackName = attack?.name || (specialStyle === "magic" ? "Magic" : "Ranged");
     for (const target of visibleTargets) {
-      const result = rollJadSpecialDamage(jad, target, specialStyle);
-      addSplat(target, result.damage || 0, jad.team, specialStyle, result.damage > 0 ? `-${result.damage}` : "miss");
+      const result = rollJadSpecialDamage(jad, target, specialStyle, attack);
+      addSplat(target, result.damage || 0, jad.team, specialStyle, result.damage > 0 ? String(result.damage) : "0", result.isMaxHit);
       addEffect(jad, target, jad.team, specialStyle);
       target.lastAttackedAt = fightTime;
       target.lastAttackerId = jad.id;
@@ -4565,7 +4570,8 @@ function UnitTokenView({ unit, bump, showName = true, visualOffset = null }) {
   const teleportPct = teleporting ? Math.max(0, Math.min(100, 100 * (1 - Math.max(0, HOME_TELEPORT_SECONDS - ((unit.currentFightTime ?? 0) - unit.homeTeleportStartedAt)) / HOME_TELEPORT_SECONDS))) : 0;
   const isJad = unit.style === "tz_tok_jad";
   const jadSpecialRemaining = isJad && unit.jadNextSpecialAt != null ? Math.max(0, Number(unit.jadNextSpecialAt || 0) - Number(unit.currentFightTime || 0)) : null;
-  const jadSpecialPct = jadSpecialRemaining == null ? null : Math.max(0, Math.min(100, 100 * (1 - (jadSpecialRemaining / JAD_SPECIAL_INTERVAL))));
+  const jadSpecialInterval = isJad ? Math.max(1, Number(unit.jadSpecialInterval || JAD_SPECIAL_INTERVAL)) : JAD_SPECIAL_INTERVAL;
+  const jadSpecialPct = jadSpecialRemaining == null ? null : Math.max(0, Math.min(100, 100 * (1 - (jadSpecialRemaining / jadSpecialInterval))));
   const coreColor = unit.team === "npc" ? "#ffffff" : (TEAM_META[unit.team]?.dark || "#1c1917");
   const overheadPrayer = activeOverheadPrayer(unit);
   const ringStyle = {

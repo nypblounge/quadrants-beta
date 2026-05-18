@@ -133,6 +133,7 @@ function normalizeNpcAttack(attack = {}, index = 0, fallback = {}) {
     attackSpeed: Math.max(1, Math.round(numberValue(attack.attackSpeed ?? attack.attackTicks, fallback.attackSpeed ?? 4))),
     attackRange: Math.max(1, Math.round(numberValue(attack.attackRange ?? attack.range, fallback.attackRange ?? 1))),
     special: String(attack.special || "").trim(),
+    specialInterval: attack.specialInterval === "" || attack.specialInterval == null ? "" : Math.max(1, Math.round(numberValue(attack.specialInterval, 1))),
     maxMultiplier: attack.maxMultiplier === "" || attack.maxMultiplier == null ? "" : Math.max(1, numberValue(attack.maxMultiplier, 1)),
     protectedMaxMultiplier: attack.protectedMaxMultiplier === "" || attack.protectedMaxMultiplier == null ? "" : Math.max(0, numberValue(attack.protectedMaxMultiplier, 0)),
   };
@@ -142,6 +143,20 @@ function normalizeNpcAttacks(attacks = [], fallback = {}) {
   const list = Array.isArray(attacks) && attacks.length ? attacks : [fallback];
   return list.map((attack, index) => normalizeNpcAttack(attack, index, fallback));
 }
+
+function ensureJadSpecialAttacks(npc = {}, attacks = []) {
+  if (npc?.id !== "tz_tok_jad") return attacks;
+  const hasRange = attacks.some((a) => a?.special === "jad_shockwave" && a?.combatType === "range");
+  const hasMagic = attacks.some((a) => a?.special === "jad_shockwave" && a?.combatType === "magic");
+  const baseDamage = numberValue(npc.baseDamage, 20);
+  const attackSpeed = numberValue(npc.attackSpeed, 8);
+  const attackRange = numberValue(npc.attackRange, 10);
+  const next = [...attacks];
+  if (!hasRange) next.push(normalizeNpcAttack({ id: "jad_ranged_shockwave", name: "Ranged shockwave", combatType: "range", baseDamage, attackSpeed, attackRange, special: "jad_shockwave", specialInterval: 15 }, next.length, { combatType: "range", baseDamage, attackSpeed, attackRange }));
+  if (!hasMagic) next.push(normalizeNpcAttack({ id: "jad_magic_shockwave", name: "Magic shockwave", combatType: "magic", baseDamage, attackSpeed, attackRange, special: "jad_shockwave", specialInterval: 15 }, next.length, { combatType: "magic", baseDamage, attackSpeed, attackRange }));
+  return next;
+}
+
 
 function estimatedNpcAttackMaxHit(npc = {}, attack = {}) {
   const type = UNIT_COMBAT_TYPES.includes(attack.combatType) ? attack.combatType : (npc.combatType || "melee");
@@ -164,7 +179,7 @@ function normalizeNpc(npc) {
   const stats = normalizeStatBlock(npc.stats || {}, hp);
   stats.hitpoints = hp;
   const fallbackAttack = { id: "primary", name: npc.combatType || "melee", combatType: npc.combatType || "melee", baseDamage: Math.max(0, Math.round(numberValue(npc.baseDamage, 1))), attackSpeed: Math.max(1, Math.round(numberValue(npc.attackSpeed, 4))), attackRange: Math.max(1, Math.round(numberValue(npc.attackRange, 1))) };
-  const attacks = normalizeNpcAttacks(npc.attacks, fallbackAttack);
+  const attacks = ensureJadSpecialAttacks(npc, normalizeNpcAttacks(npc.attacks, fallbackAttack));
   return {
     id,
     name: String(npc.name || id || "New NPC").trim(),
@@ -825,7 +840,8 @@ function ContentManager({ onBack }) {
                         <Field label='Base damage'><NumberInput value={attack.baseDamage} min={0} onChange={(value) => updateNpcAttack(index, { baseDamage: value })} /></Field>
                         <Field label='Attack speed'><NumberInput value={attack.attackSpeed} min={1} onChange={(value) => updateNpcAttack(index, { attackSpeed: value })} /></Field>
                         <Field label='Range'><NumberInput value={attack.attackRange} min={1} onChange={(value) => updateNpcAttack(index, { attackRange: value })} /></Field>
-                        <Field label='Special'><input value={attack.special || ''} onChange={(e) => updateNpcAttack(index, { special: e.target.value })} placeholder='dragonfire' /></Field>
+                        <Field label='Special'><input value={attack.special || ''} onChange={(e) => updateNpcAttack(index, { special: e.target.value })} placeholder='dragonfire, jad_shockwave' /></Field>
+                        <Field label="Special interval"><NumberInput value={attack.specialInterval || ""} min={1} onChange={(value) => updateNpcAttack(index, { specialInterval: value })} /></Field>
                         <Field label='Max multiplier'><NumberInput value={attack.maxMultiplier || 1} min={1} onChange={(value) => updateNpcAttack(index, { maxMultiplier: value })} /></Field>
                         <Field label='Protected max'><NumberInput value={attack.protectedMaxMultiplier || 0} min={0} onChange={(value) => updateNpcAttack(index, { protectedMaxMultiplier: value })} /></Field>
                         <small>Estimated max hit: <b>{estimatedNpcAttackMaxHit(npc, attack)}</b>{attack.special === 'dragonfire' ? dragonfireMaxSummary(npc, attack) : ''}</small>

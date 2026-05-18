@@ -594,41 +594,78 @@ export const DEFAULT_NPCS = [
       }
     ]
   },
-  {
-    "id": "tz_tok_jad",
-    "name": "TzTok_Jad",
-    "icon": "280px-TzTok-Jad.png",
-    "size": 3,
-    "combatType": "melee",
-    "hp": 250,
-    "baseDamage": 50,
-    "attackSpeed": 8,
-    "attackRange": 10,
-    "spawnAmount": 0,
-    "spawnInterval": 180,
-    "maxAlive": 0,
-    "maxSpawns": 0,
-    "effectKey": "",
-    "notes": "",
-    "stats": {
-      "attack": 100,
-      "strength": 100,
-      "defence": 100,
-      "magic": 100,
-      "range": 100,
-      "prayer": 1,
-      "hitpoints": 250
-    },
-    "drops": [
-      {
-        "id": "drop_1",
-        "type": "item",
-        "itemId": "fire_cape",
-        "chance": 1,
-        "minQty": 1,
-        "maxQty": 1
-      }
-    ]
+    {
+      "id": "tz_tok_jad",
+      "name": "TzTok_Jad",
+      "icon": "280px-TzTok-Jad.png",
+      "size": 3,
+      "combatType": "melee",
+      "hp": 250,
+      "baseDamage": 50,
+      "attackSpeed": 8,
+      "attackRange": 10,
+      "spawnAmount": 0,
+      "spawnInterval": 180,
+      "maxAlive": 0,
+      "maxSpawns": 0,
+      "effectKey": "",
+      "notes": "",
+      "stats": {
+          "attack": 100,
+          "strength": 100,
+          "defence": 100,
+          "magic": 100,
+          "range": 100,
+          "prayer": 1,
+          "hitpoints": 250
+      },
+      "drops": [
+          {
+              "id": "drop_1",
+              "type": "item",
+              "itemId": "fire_cape",
+              "chance": 1,
+              "minQty": 1,
+              "maxQty": 1
+          }
+      ],
+      "attacks": [
+          {
+              "id": "primary",
+              "name": "Melee",
+              "combatType": "melee",
+              "baseDamage": 50,
+              "attackSpeed": 8,
+              "attackRange": 1,
+              "special": "",
+              "maxMultiplier": "",
+              "protectedMaxMultiplier": ""
+          },
+          {
+              "id": "jad_ranged_shockwave",
+              "name": "Ranged shockwave",
+              "combatType": "range",
+              "baseDamage": 50,
+              "attackSpeed": 8,
+              "attackRange": 10,
+              "special": "jad_shockwave",
+              "specialInterval": 15,
+              "maxMultiplier": "",
+              "protectedMaxMultiplier": ""
+          },
+          {
+              "id": "jad_magic_shockwave",
+              "name": "Magic shockwave",
+              "combatType": "magic",
+              "baseDamage": 50,
+              "attackSpeed": 8,
+              "attackRange": 10,
+              "special": "jad_shockwave",
+              "specialInterval": 15,
+              "maxMultiplier": "",
+              "protectedMaxMultiplier": ""
+          }
+      ]
   },
   {
     "id": "kolodion",
