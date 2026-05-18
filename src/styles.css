@@ -3232,7 +3232,7 @@ label { display: grid; gap: 8px; color: #fde68a; font-weight: 800; font-size: 14
 
 /* render-only unit movement smoothing */
 .unit-token.unit-moving {
-  animation: unit-walk-smooth 740ms linear both;
+  animation: unit-walk-smooth var(--move-duration, 780ms) linear both;
   will-change: transform;
 }
 @keyframes unit-walk-smooth {

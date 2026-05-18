@@ -4572,7 +4572,7 @@ function UnitTokenView({ unit, bump, showName = true, visualOffset = null }) {
   };
   const tokenStyle = {
     ...(footprintSize > 1 ? { "--unit-size": footprintSize } : {}),
-    ...(visualOffset ? { "--move-x": visualOffset.x, "--move-y": visualOffset.y } : {}),
+    ...(visualOffset ? { "--move-x": visualOffset.x, "--move-y": visualOffset.y, "--move-duration": visualOffset.durationMs ? String(Math.round(visualOffset.durationMs)) + "ms" : undefined } : {}),
   };
   return (
     <div className={["unit-token", "unit-size-" + footprintSize, footprintSize > 1 ? "large-unit" : "", bump ? "bump" : "", unit.team === "npc" ? "npc-unit" : "", visualOffset ? "unit-moving" : ""].filter(Boolean).join(" ")} style={tokenStyle} title={unit.name}>
@@ -4604,6 +4604,7 @@ const UnitToken = React.memo(UnitTokenView, (prev, next) => {
   return prev.bump === next.bump
     && (prev.visualOffset?.x || 0) === (next.visualOffset?.x || 0)
     && (prev.visualOffset?.y || 0) === (next.visualOffset?.y || 0)
+    && (prev.visualOffset?.durationMs || 0) === (next.visualOffset?.durationMs || 0)
     && prev.showName === next.showName
     && a.id === b.id
     && a.row === b.row
@@ -5701,22 +5702,54 @@ function BoardView({ lobby, player, selectedTool, onCellClick, onUnitClick, sele
   const groundItems = groundItemsArray(game);
   const respawns = arrayFromObject(game.respawnQueue);
   const previousUnitTilesRef = useRef(new Map());
+  const unitMotionRef = useRef(new Map());
+  const pendingUnitMotionRef = useRef(new Map());
   const visualUnitOffsets = useMemo(() => {
+    const now = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
     const previous = previousUnitTilesRef.current;
+    const motions = unitMotionRef.current;
     const offsets = new Map();
+    const nextMotions = new Map();
+    const positionAt = (motion) => {
+      if (!motion) return null;
+      const pct = Math.max(0, Math.min(1, (now - motion.startedAt) / Math.max(1, motion.durationMs || 740)));
+      return { row: motion.fromRow + (motion.toRow - motion.fromRow) * pct, col: motion.fromCol + (motion.toCol - motion.fromCol) * pct };
+    };
     for (const unit of units) {
       const before = previous.get(unit.id);
+      const oldMotion = motions.get(unit.id);
       if (!before || unit.hp <= 0) continue;
-      const rowDelta = before.row - unit.row;
-      const colDelta = before.col - unit.col;
-      if ((rowDelta || colDelta) && Math.abs(rowDelta) <= 1 && Math.abs(colDelta) <= 1) offsets.set(unit.id, { x: colDelta, y: rowDelta });
+      const moved = before.row !== unit.row || before.col !== unit.col;
+      if (!moved) {
+        if (oldMotion && oldMotion.toRow === unit.row && oldMotion.toCol === unit.col) {
+          const pos = positionAt(oldMotion);
+          const dx = (pos?.col ?? unit.col) - unit.col;
+          const dy = (pos?.row ?? unit.row) - unit.row;
+          if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+            offsets.set(unit.id, { x: dx, y: dy, durationMs: Math.max(80, Math.round((oldMotion.durationMs || 740) - (now - oldMotion.startedAt))) });
+            nextMotions.set(unit.id, oldMotion);
+          }
+        }
+        continue;
+      }
+      const pos = positionAt(oldMotion) || before;
+      const x = pos.col - unit.col;
+      const y = pos.row - unit.row;
+      const distance = Math.max(0.001, Math.hypot(x, y));
+      const durationMs = Math.max(160, Math.min(980, Math.round(distance * 780)));
+      if (Math.abs(x) <= 2.2 && Math.abs(y) <= 2.2) {
+        offsets.set(unit.id, { x, y, durationMs });
+        nextMotions.set(unit.id, { fromRow: pos.row, fromCol: pos.col, toRow: unit.row, toCol: unit.col, startedAt: now, durationMs });
+      }
     }
+    pendingUnitMotionRef.current = nextMotions;
     return offsets;
   }, [game.units]);
   useEffect(() => {
     const next = new Map();
     for (const unit of units) next.set(unit.id, { row: unit.row, col: unit.col });
     previousUnitTilesRef.current = next;
+    unitMotionRef.current = pendingUnitMotionRef.current;
   }, [game.units]);
   const unitsByCell = useMemo(() => {
     const map = new Map();
