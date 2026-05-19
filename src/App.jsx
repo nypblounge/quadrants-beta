@@ -263,9 +263,9 @@ const GAME_CONTENT_PACK = loadGameContentPack();
 const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, centerSize: 5, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, npcSpawnSettings: {}, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
 const MATCH_ANALYTICS_SCHEMA_VERSION = 3;
 const MATCH_ANALYTICS_SNAPSHOT_SECONDS = 30;
-const MATCH_ANALYTICS_MAX_SNAPSHOTS = 80;
+const MATCH_ANALYTICS_MAX_SNAPSHOTS = 60;
 const MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT = 180;
-const MATCH_ANALYTICS_MAX_EVENTS = 2000;
+const MATCH_ANALYTICS_MAX_EVENTS = 1000;
 const MATCH_ANALYTICS_COMBAT_WINDOW_SECONDS = 5;
 
 const CPU_PLAYER_PREFIX = "cpu_";
@@ -4435,6 +4435,66 @@ function summarizeMatchAnalyticsEvents(events = []) {
   return summary;
 }
 
+function mergeGameWithExternalAnalytics(game = {}, analytics = {}) {
+  const out = { ...(game || {}) };
+  if (Array.isArray(analytics.snapshots)) out.matchAnalyticsSnapshots = analytics.snapshots;
+  else if (!Array.isArray(out.matchAnalyticsSnapshots)) out.matchAnalyticsSnapshots = [];
+  if (analytics.lastSnapshotAt != null) out.lastAnalyticsSnapshotAt = analytics.lastSnapshotAt;
+  if (Array.isArray(analytics.events)) out.matchAnalyticsEvents = analytics.events;
+  else if (!Array.isArray(out.matchAnalyticsEvents)) out.matchAnalyticsEvents = [];
+  if (analytics.eventCount != null) out.analyticsEventCount = analytics.eventCount;
+  else out.analyticsEventCount = Number(out.analyticsEventCount || out.matchAnalyticsEvents.length || 0);
+  return out;
+}
+
+function analyticsBranchFromGame(game = {}) {
+  return {
+    schemaVersion: MATCH_ANALYTICS_SCHEMA_VERSION,
+    snapshots: Array.isArray(game.matchAnalyticsSnapshots) ? game.matchAnalyticsSnapshots.slice(-MATCH_ANALYTICS_MAX_SNAPSHOTS) : [],
+    lastSnapshotAt: game.lastAnalyticsSnapshotAt ?? null,
+    events: Array.isArray(game.matchAnalyticsEvents) ? game.matchAnalyticsEvents.slice(-MATCH_ANALYTICS_MAX_EVENTS) : [],
+    eventCount: Number(game.analyticsEventCount || (Array.isArray(game.matchAnalyticsEvents) ? game.matchAnalyticsEvents.length : 0) || 0),
+    eventSummary: summarizeMatchAnalyticsEvents(game.matchAnalyticsEvents),
+    updatedAt: Date.now(),
+  };
+}
+
+function stripAnalyticsFromGame(game = {}) {
+  const out = { ...(game || {}) };
+  delete out.matchAnalyticsSnapshots;
+  delete out.lastAnalyticsSnapshotAt;
+  delete out.matchAnalyticsEvents;
+  delete out.analyticsEventCount;
+  return out;
+}
+
+function removeAnalyticsFieldsFromPatch(patch = {}) {
+  const out = { ...(patch || {}) };
+  delete out.matchAnalyticsSnapshots;
+  delete out.lastAnalyticsSnapshotAt;
+  delete out.matchAnalyticsEvents;
+  delete out.analyticsEventCount;
+  return out;
+}
+
+function putGamePatchAtLobbyRoot(rootPatch, gamePatch = {}) {
+  for (const [key, value] of Object.entries(gamePatch || {})) {
+    rootPatch[`game/${key}`] = value;
+  }
+  return rootPatch;
+}
+
+function putAnalyticsPatchAtLobbyRoot(rootPatch, analytics = {}) {
+  rootPatch["analytics/schemaVersion"] = analytics.schemaVersion || MATCH_ANALYTICS_SCHEMA_VERSION;
+  rootPatch["analytics/snapshots"] = Array.isArray(analytics.snapshots) ? analytics.snapshots : [];
+  rootPatch["analytics/lastSnapshotAt"] = analytics.lastSnapshotAt ?? null;
+  rootPatch["analytics/events"] = Array.isArray(analytics.events) ? analytics.events : [];
+  rootPatch["analytics/eventCount"] = Number(analytics.eventCount || 0);
+  rootPatch["analytics/eventSummary"] = analytics.eventSummary || {};
+  rootPatch["analytics/updatedAt"] = analytics.updatedAt || Date.now();
+  return rootPatch;
+}
+
 function summarizeResults(game, reason) {
   const setup = game.setup;
   const teams = activeTeams(setup);
@@ -4498,9 +4558,7 @@ function summarizeResults(game, reason) {
     topLevels,
     topHill,
     allUnits,
-    analyticsSnapshots: Array.isArray(game.matchAnalyticsSnapshots) ? game.matchAnalyticsSnapshots : [],
     analyticsSnapshotCount: Array.isArray(game.matchAnalyticsSnapshots) ? game.matchAnalyticsSnapshots.length : 0,
-    analyticsEvents: Array.isArray(game.matchAnalyticsEvents) ? game.matchAnalyticsEvents : [],
     analyticsEventCount: Array.isArray(game.matchAnalyticsEvents) ? game.matchAnalyticsEvents.length : 0,
     analyticsEventSummary: summarizeMatchAnalyticsEvents(game.matchAnalyticsEvents),
   };
@@ -8124,6 +8182,8 @@ export default function QuadrantsOnline() {
   const resyncVoteProcessInFlightRef = useRef(false);
   const resyncVoteProcessedAtRef = useRef(0);
   const latestLobbyRef = useRef(null);
+  const latestAnalyticsRef = useRef({});
+  const fightTickPausedNoticeRef = useRef({ incomplete: 0, store: 0 });
 
   useEffect(() => {
     latestLobbyRef.current = lobby;
@@ -8151,7 +8211,7 @@ export default function QuadrantsOnline() {
 
   const player = lobby?.players?.[playerId] || null;
   const isHost = lobby?.hostId === playerId;
-  const game = lobby?.game;
+  const game = mergeGameWithExternalAnalytics(lobby?.game, latestAnalyticsRef.current || {});
   const phase = lobby?.phase || "home";
 
   useEffect(() => {
@@ -8226,9 +8286,18 @@ export default function QuadrantsOnline() {
       publishLobby();
     }));
 
+    // Analytics can become much larger than gameplay state. Keep it outside the
+    // subscribed `game` branch so normal players do not re-download the full
+    // analysis payload on every fight tick. The host still keeps the latest
+    // analytics branch here so it can append to the same match history.
+    const analyticsUnsub = onValue(ref(db, `lobbies/${lobbyCode}/analytics`), (snap) => {
+      latestAnalyticsRef.current = snap.val() || {};
+    });
+
     return () => {
       disposed = true;
       unsubs.forEach((unsub) => unsub());
+      analyticsUnsub();
     };
   }, [lobbyCode]);
 
@@ -8314,30 +8383,39 @@ export default function QuadrantsOnline() {
         const latest = latestLobbyRef.current;
         if (!latest || latest.phase !== "fight" || latest.hostId !== playerId) return;
         const now = Date.now();
+        if (typeof quadrantsWsStoreClient.isConnected === "function" && !quadrantsWsStoreClient.isConnected()) {
+          if (now - Number(fightTickPausedNoticeRef.current.store || 0) > 5000) {
+            fightTickPausedNoticeRef.current.store = now;
+            console.warn("Fight tick paused while the WebSocket store reconnects.");
+          }
+          return;
+        }
         if (resyncVotePassed(latest, now)) {
           await processPassedResyncVote(latest);
           return;
         }
         if (!isCompleteFightGameSnapshot(latest.game)) {
-          console.warn("Skipping fight tick until the lobby game snapshot is complete after sync/resync.");
+          if (now - Number(fightTickPausedNoticeRef.current.incomplete || 0) > 5000) {
+            fightTickPausedNoticeRef.current.incomplete = now;
+            console.warn("Skipping fight tick until the lobby game snapshot is complete after sync/resync.");
+          }
           return;
         }
       if (allVoteEndYes(latest)) {
-        let gameWithFinalSnapshot = appendMatchAnalyticsSnapshot(latest.game, "final", { phase: "results", includeBoard: true, includeArchived: true });
+        let gameWithFinalSnapshot = mergeGameWithExternalAnalytics(latest.game || {}, latestAnalyticsRef.current || {});
+        gameWithFinalSnapshot = appendMatchAnalyticsSnapshot(gameWithFinalSnapshot, "final", { phase: "results", includeBoard: true, includeArchived: true });
         gameWithFinalSnapshot = appendMatchAnalyticsEvent(gameWithFinalSnapshot, "match_finished", { phase: "results", reason: "vote to end", winner: summarizeResults(gameWithFinalSnapshot, "vote to end").winner });
+        const finalAnalytics = analyticsBranchFromGame(gameWithFinalSnapshot);
+        latestAnalyticsRef.current = finalAnalytics;
         const results = summarizeResults(gameWithFinalSnapshot, "vote to end");
-        await update(ref(db, `lobbies/${lobbyCode}`), {
+        await update(ref(db, `lobbies/${lobbyCode}`), putAnalyticsPatchAtLobbyRoot({
           phase: "results",
           voteEnd: {},
           resyncVote: {},
           "game/results": results,
           "game/finished": true,
-          "game/matchAnalyticsSnapshots": gameWithFinalSnapshot.matchAnalyticsSnapshots,
-          "game/lastAnalyticsSnapshotAt": gameWithFinalSnapshot.lastAnalyticsSnapshotAt,
-          "game/matchAnalyticsEvents": gameWithFinalSnapshot.matchAnalyticsEvents,
-          "game/analyticsEventCount": gameWithFinalSnapshot.analyticsEventCount,
           "game/log": [`Fight ended by unanimous vote: ${results.winner || "Draw"}.`, ...(latest.game.log || [])].slice(0, 8),
-        });
+        }, finalAnalytics));
         return;
       }
       // Run simulation on a cloned game object. stepGame intentionally mutates
@@ -8345,15 +8423,17 @@ export default function QuadrantsOnline() {
       // the diff code below can miss changes because previousGame was mutated too.
       // That caused synced fields such as NPC loot inventories and NPC spawn
       // counters to sometimes not be written to the shared store.
-      const previousGameSnapshot = latest.game || {};
+      const previousGameSnapshot = mergeGameWithExternalAnalytics(latest.game || {}, latestAnalyticsRef.current || {});
       const simulationGame = JSON.parse(JSON.stringify(previousGameSnapshot || {}));
       let nextGame = stepGame(simulationGame, TICK_SECONDS);
       nextGame = maybeAppendTimedFightAnalyticsSnapshot(nextGame, previousGameSnapshot);
       if (nextGame.finished) {
         let gameWithFinalSnapshot = appendMatchAnalyticsSnapshot(nextGame, "final", { phase: "results", includeBoard: true, includeArchived: true });
         gameWithFinalSnapshot = appendMatchAnalyticsEvent(gameWithFinalSnapshot, "match_finished", { phase: "results", reason: nextGame.results?.reason || "last combat presence" });
+        const finalAnalytics = analyticsBranchFromGame(gameWithFinalSnapshot);
+        latestAnalyticsRef.current = finalAnalytics;
         const results = summarizeResults(gameWithFinalSnapshot, nextGame.results?.reason || "last combat presence");
-        await update(ref(db, `lobbies/${lobbyCode}`), {
+        await update(ref(db, `lobbies/${lobbyCode}`), putAnalyticsPatchAtLobbyRoot({
           phase: "results",
           "game/results": results,
           "game/finished": true,
@@ -8375,16 +8455,17 @@ export default function QuadrantsOnline() {
           "game/splats": gameWithFinalSnapshot.splats,
           "game/effects": gameWithFinalSnapshot.effects,
           "game/groundItems": gameWithFinalSnapshot.groundItems,
-          "game/matchAnalyticsSnapshots": gameWithFinalSnapshot.matchAnalyticsSnapshots,
-          "game/lastAnalyticsSnapshotAt": gameWithFinalSnapshot.lastAnalyticsSnapshotAt,
-          "game/matchAnalyticsEvents": gameWithFinalSnapshot.matchAnalyticsEvents,
-          "game/analyticsEventCount": gameWithFinalSnapshot.analyticsEventCount,
           "game/fightTime": gameWithFinalSnapshot.fightTime,
           "game/lastSimTickAt": now,
           "game/simTick": Number(previousGameSnapshot?.simTick || 0) + 1,
           "game/log": [`Fight ended: ${results.winner || "Draw"}.`, ...(nextGame.log || [])].slice(0, 8),
-        });
+        }, finalAnalytics));
       } else {
+        // Keep fight analytics local while the match is running. Uploading the
+        // growing analytics arrays on every tick made the shared store too chatty
+        // and could force reconnects/timeouts on some browsers. The final branch
+        // is uploaded once when the match ends.
+        latestAnalyticsRef.current = analyticsBranchFromGame(nextGame);
         const previousGame = previousGameSnapshot;
         const gamePatch = {
           fightTime: nextGame.fightTime,
@@ -8408,16 +8489,17 @@ export default function QuadrantsOnline() {
         patchIfChanged(gamePatch, previousGame, "splats", nextGame.splats);
         patchIfChanged(gamePatch, previousGame, "effects", nextGame.effects);
         patchIfChanged(gamePatch, previousGame, "groundItems", nextGame.groundItems);
-        patchIfChanged(gamePatch, previousGame, "matchAnalyticsSnapshots", nextGame.matchAnalyticsSnapshots);
-        patchIfChanged(gamePatch, previousGame, "lastAnalyticsSnapshotAt", nextGame.lastAnalyticsSnapshotAt);
-        patchIfChanged(gamePatch, previousGame, "matchAnalyticsEvents", nextGame.matchAnalyticsEvents);
-        patchIfChanged(gamePatch, previousGame, "analyticsEventCount", nextGame.analyticsEventCount);
         patchIfChanged(gamePatch, previousGame, "log", nextGame.log);
         if (nextGame._boardDirty) gamePatch.board = nextGame.board;
-        await update(ref(db, `lobbies/${lobbyCode}/game`), gamePatch);
+        const rootPatch = putGamePatchAtLobbyRoot({}, removeAnalyticsFieldsFromPatch(gamePatch));
+        await update(ref(db, `lobbies/${lobbyCode}`), rootPatch);
       }
       } catch (err) {
-        console.warn("Fight tick skipped after a transient sync/store error", err);
+        const now = Date.now();
+        if (now - Number(fightTickPausedNoticeRef.current.store || 0) > 5000) {
+          fightTickPausedNoticeRef.current.store = now;
+          console.warn("Fight tick skipped after a transient sync/store error", err);
+        }
       } finally {
         fightTickInFlightRef.current = false;
       }
@@ -8777,6 +8859,7 @@ export default function QuadrantsOnline() {
       ready: { build: {}, buy: {} },
       voteEnd: {},
       resyncVote: {},
+      analytics: null,
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
     });
@@ -8804,10 +8887,13 @@ export default function QuadrantsOnline() {
       "game/board": preparedGame.board,
       "game/units": preparedGame.units,
       "game/gold": preparedGame.gold,
-      "game/matchAnalyticsSnapshots": preparedGame.matchAnalyticsSnapshots,
-      "game/lastAnalyticsSnapshotAt": preparedGame.lastAnalyticsSnapshotAt,
-      "game/matchAnalyticsEvents": preparedGame.matchAnalyticsEvents,
-      "game/analyticsEventCount": preparedGame.analyticsEventCount,
+      "analytics/schemaVersion": MATCH_ANALYTICS_SCHEMA_VERSION,
+      "analytics/snapshots": preparedGame.matchAnalyticsSnapshots,
+      "analytics/lastSnapshotAt": preparedGame.lastAnalyticsSnapshotAt,
+      "analytics/events": preparedGame.matchAnalyticsEvents,
+      "analytics/eventCount": preparedGame.analyticsEventCount,
+      "analytics/eventSummary": summarizeMatchAnalyticsEvents(preparedGame.matchAnalyticsEvents),
+      "analytics/updatedAt": Date.now(),
       "game/log": ["Buy Phase started. Empty void tiles were filled with random water, trees, and rocks for free. CPU teams auto-buy a basic roster.", "Buy units, name them, choose targets, and finalize.", ...(lobby.game.log || [])].slice(0, 8),
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
@@ -8870,10 +8956,13 @@ export default function QuadrantsOnline() {
       "game/npcSpawnedTotals": fightGame.npcSpawnedTotals,
       "game/npcRespawnTotals": fightGame.npcRespawnTotals,
       "game/units": fightGame.units,
-      "game/matchAnalyticsSnapshots": fightGame.matchAnalyticsSnapshots,
-      "game/lastAnalyticsSnapshotAt": fightGame.lastAnalyticsSnapshotAt,
-      "game/matchAnalyticsEvents": fightGame.matchAnalyticsEvents,
-      "game/analyticsEventCount": fightGame.analyticsEventCount,
+      "analytics/schemaVersion": MATCH_ANALYTICS_SCHEMA_VERSION,
+      "analytics/snapshots": fightGame.matchAnalyticsSnapshots,
+      "analytics/lastSnapshotAt": fightGame.lastAnalyticsSnapshotAt,
+      "analytics/events": fightGame.matchAnalyticsEvents,
+      "analytics/eventCount": fightGame.analyticsEventCount,
+      "analytics/eventSummary": summarizeMatchAnalyticsEvents(fightGame.matchAnalyticsEvents),
+      "analytics/updatedAt": Date.now(),
       voteEnd: {},
       resyncVote: {},
       "game/log": [`${GAME_MODES[lobby.game.setup.gameMode || "classic"]?.name || "Fight"} started. Host browser simulates combat; host migration continues if host disconnects.`, ...(lobby.game.log || [])].slice(0, 8),
@@ -8892,6 +8981,7 @@ export default function QuadrantsOnline() {
       continuedRoster: null,
       carryoverGold: null,
       carryoverLoot: null,
+      analytics: null,
       voteEnd: {},
       resyncVote: {},
       updatedAt: Date.now(),
@@ -8958,7 +9048,10 @@ export default function QuadrantsOnline() {
         [`lobbies/${lobbyCode}/game/board/${row}/${col}/regrowAt`]: null,
         [`lobbies/${lobbyCode}/game/gold/${team}`]: gold + refund,
         [`lobbies/${lobbyCode}/game/log`]: [`${TEAM_META[team].name} sold ${TILE[cell.type]?.name || "tile"} for ${refund}g.`, ...(game.log || [])].slice(0, 8),
-        [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+        [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+        [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+        [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+        [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
       });
       return;
     }
@@ -8981,7 +9074,10 @@ export default function QuadrantsOnline() {
       [`lobbies/${lobbyCode}/game/board/${row}/${col}/type`]: selectedTool.type,
       [`lobbies/${lobbyCode}/game/gold/${team}`]: gold - cost,
       [`lobbies/${lobbyCode}/game/log`]: [`${TEAM_META[team].name} placed ${TILE[selectedTool.type].name}.`, ...(game.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+      [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+      [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
     });
   }
 
@@ -9019,7 +9115,10 @@ export default function QuadrantsOnline() {
         [`lobbies/${lobbyCode}/game/units/${id}`]: unit,
         [`lobbies/${lobbyCode}/game/gold/${team}`]: gold - style.cost,
         [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${unit.name}.`, ...(game.log || [])].slice(0, 8),
-        [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+        [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+        [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+        [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+        [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
       });
     } finally {
       buyUnitPendingRef.current = false;
@@ -9062,7 +9161,10 @@ export default function QuadrantsOnline() {
       [`lobbies/${lobbyCode}/game/gold/${player.team}`]: (game.gold?.[player.team] ?? 0) + refund + autoSellGold,
       ...marketUpdates,
       [`lobbies/${lobbyCode}/game/log`]: [`${player.name} sold ${unit.name} for ${refund}g${autoSellGold ? ` and auto-sold overflow gear for ${autoSellGold}g` : ""}.`, ...(game.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+      [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+      [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
     });
   }
 
@@ -9092,7 +9194,10 @@ export default function QuadrantsOnline() {
       [`lobbies/${lobbyCode}/game/loot/${team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/gold/${team}`]: gold - item.cost,
       [`lobbies/${lobbyCode}/game/log`]: [`${player.name} bought ${item.name}.`, ...(game.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+      [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+      [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
     });
   }
 
@@ -9128,7 +9233,10 @@ export default function QuadrantsOnline() {
       [`lobbies/${lobbyCode}/game/marketItems/${marketKey}`]: market,
       [`lobbies/${lobbyCode}/game/gold/${player.team}`]: (game.gold?.[player.team] ?? 0) + refund,
       [`lobbies/${lobbyCode}/game/log`]: [`${player.name} sold ${item.name}${sellQty > 1 ? ` x${sellQty}` : ""} to the shop for ${refund}g.`, ...(game.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+      [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+      [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
     });
   }
 
@@ -9200,7 +9308,10 @@ export default function QuadrantsOnline() {
       goldBefore: gold,
       goldAfter: gold - price,
     });
-    updates[`lobbies/${lobbyCode}/game/matchAnalyticsEvents`] = eventGame.matchAnalyticsEvents;
+    updates[`lobbies/${lobbyCode}/analytics/events`] = eventGame.matchAnalyticsEvents;
+    updates[`lobbies/${lobbyCode}/analytics/eventCount`] = eventGame.analyticsEventCount;
+    updates[`lobbies/${lobbyCode}/analytics/eventSummary`] = summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents);
+    updates[`lobbies/${lobbyCode}/analytics/updatedAt`] = Date.now();
     await update(ref(db), updates);
   }
 
@@ -9231,7 +9342,10 @@ export default function QuadrantsOnline() {
         [`lobbies/${lobbyCode}/game/units/${unit.id}/stats`]: patchedUnit.stats,
         [`lobbies/${lobbyCode}/game/units/${unit.id}/levelsGained`]: patchedUnit.levelsGained ?? unit.levelsGained ?? 0,
         [`lobbies/${lobbyCode}/game/log`]: [`${player.name} used ${item.name} on ${unit.name} for Prayer XP.`, ...(game.log || [])].slice(0, 8),
-        [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+        [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+        [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+        [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+        [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
       });
       return;
     }
@@ -9266,7 +9380,10 @@ export default function QuadrantsOnline() {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/units/${unitId}/equipment`]: equipment,
       [`lobbies/${lobbyCode}/game/log`]: [`${unit.name} equipped ${item.name}.`, ...(game.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+      [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+      [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
     });
   }
 
@@ -9296,7 +9413,10 @@ export default function QuadrantsOnline() {
       [`lobbies/${lobbyCode}/game/loot/${player.team}/inventory`]: inventoryObjectFromArray(inventory),
       [`lobbies/${lobbyCode}/game/units/${unitId}/equipment`]: equipment,
       [`lobbies/${lobbyCode}/game/log`]: [`${unit.name} unequipped ${itemById(equipped)?.name || "gear"}.`, ...(game.log || [])].slice(0, 8),
-      [`lobbies/${lobbyCode}/game/matchAnalyticsEvents`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/events`]: eventGame.matchAnalyticsEvents,
+      [`lobbies/${lobbyCode}/analytics/eventCount`]: eventGame.analyticsEventCount,
+      [`lobbies/${lobbyCode}/analytics/eventSummary`]: summarizeMatchAnalyticsEvents(eventGame.matchAnalyticsEvents),
+      [`lobbies/${lobbyCode}/analytics/updatedAt`]: Date.now(),
     });
   }
 
