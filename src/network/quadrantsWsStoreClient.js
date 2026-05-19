@@ -75,6 +75,15 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
     }, reconnectDelayMs);
   }
 
+  function isTransientStoreError(err) {
+    const message = String(err?.message || err || "").toLowerCase();
+    return message.includes("connection closed") || message.includes("not connected") || message.includes("connection error") || message.includes("timed out connecting");
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   function resolvePending(message) {
     const requestId = message.requestId;
 
@@ -198,30 +207,45 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
     return connectPromise;
   }
 
-  async function request(message) {
-    await connect();
+  async function request(message, attempt = 0) {
+    try {
+      await connect();
 
-    const requestId = message.requestId || `${makeRequestId()}_${requestSeq++}`;
+      const requestId = message.requestId || `${makeRequestId()}_${requestSeq++}`;
 
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        pending.delete(requestId);
-        reject(new Error(`Timed out waiting for ${message.type}.`));
-      }, 8000);
+      return await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pending.delete(requestId);
+          reject(new Error(`Timed out waiting for ${message.type}.`));
+        }, 8000);
 
-      pending.set(requestId, {
-        resolve: (value) => {
+        pending.set(requestId, {
+          resolve: (value) => {
+            clearTimeout(timeout);
+            resolve(value);
+          },
+          reject: (err) => {
+            clearTimeout(timeout);
+            reject(err);
+          }
+        });
+
+        try {
+          send({ ...message, requestId });
+        } catch (err) {
           clearTimeout(timeout);
-          resolve(value);
-        },
-        reject: (err) => {
-          clearTimeout(timeout);
+          pending.delete(requestId);
           reject(err);
         }
       });
+    } catch (err) {
+      if (!manuallyClosed && attempt < 2 && isTransientStoreError(err)) {
+        await wait(Math.min(1000 * (attempt + 1), 2500));
+        return request(message, attempt + 1);
+      }
 
-      send({ ...message, requestId });
-    });
+      throw err;
+    }
   }
 
   return {

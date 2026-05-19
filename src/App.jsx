@@ -2757,8 +2757,31 @@ function mergeLatestUnits(...groups) {
   return Object.values(out);
 }
 
-function cloneBoard(board) {
-  return board.map((row) => row.map((cell) => ({ ...cell })));
+function cloneBoard(board, setup = DEFAULT_SETUP) {
+  const safeSetup = setup || DEFAULT_SETUP;
+  const fallback = makeBoard(safeSetup);
+  if (!Array.isArray(board)) return fallback;
+  return fallback.map((fallbackRow, rowIndex) => {
+    const sourceRow = Array.isArray(board[rowIndex]) ? board[rowIndex] : [];
+    return fallbackRow.map((fallbackCell, colIndex) => {
+      const sourceCell = sourceRow[colIndex];
+      return sourceCell && typeof sourceCell === "object"
+        ? { ...fallbackCell, ...sourceCell, row: rowIndex, col: colIndex }
+        : { ...fallbackCell };
+    });
+  });
+}
+
+function isCompleteFightGameSnapshot(game) {
+  return Boolean(
+    game &&
+    typeof game === "object" &&
+    game.setup &&
+    Array.isArray(game.board) &&
+    game.board.length > 0 &&
+    game.units &&
+    game.bases
+  );
 }
 
 function walkable(cell, setup) {
@@ -4488,8 +4511,9 @@ function stepSimulation(game, dt) {
 }
 
 function stepGame(game, dt) {
-  const setup = game.setup;
-  const board = cloneBoard(game.board);
+  if (!game || typeof game !== "object") return makeInitialGame(DEFAULT_SETUP);
+  const setup = game.setup || DEFAULT_SETUP;
+  const board = cloneBoard(game.board, setup);
   let units = arrayFromObject(game.units).map((u) => normalizeRuntimeUnit({
     ...u,
     stats: JSON.parse(JSON.stringify(u.stats)),
@@ -8294,6 +8318,10 @@ export default function QuadrantsOnline() {
           await processPassedResyncVote(latest);
           return;
         }
+        if (!isCompleteFightGameSnapshot(latest.game)) {
+          console.warn("Skipping fight tick until the lobby game snapshot is complete after sync/resync.");
+          return;
+        }
       if (allVoteEndYes(latest)) {
         let gameWithFinalSnapshot = appendMatchAnalyticsSnapshot(latest.game, "final", { phase: "results", includeBoard: true, includeArchived: true });
         gameWithFinalSnapshot = appendMatchAnalyticsEvent(gameWithFinalSnapshot, "match_finished", { phase: "results", reason: "vote to end", winner: summarizeResults(gameWithFinalSnapshot, "vote to end").winner });
@@ -8388,6 +8416,8 @@ export default function QuadrantsOnline() {
         if (nextGame._boardDirty) gamePatch.board = nextGame.board;
         await update(ref(db, `lobbies/${lobbyCode}/game`), gamePatch);
       }
+      } catch (err) {
+        console.warn("Fight tick skipped after a transient sync/store error", err);
       } finally {
         fightTickInFlightRef.current = false;
       }
