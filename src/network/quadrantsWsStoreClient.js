@@ -249,6 +249,10 @@ export function createQuadrantsWsStoreClient(url = defaultWsUrl()) {
   }
 
   return {
+    isConnected() {
+      return Boolean(connected && ws && ws.readyState === WebSocket.OPEN);
+    },
+
     async get(path) {
       const cleanPath = normalizePath(path);
       const response = await request({ type: "store_get", path: cleanPath });
