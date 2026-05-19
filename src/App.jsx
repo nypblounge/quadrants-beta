@@ -6189,6 +6189,8 @@ function BuyPanel({ lobby, player, onBuy, onBuyMarketItem, onSellInventoryItem, 
   const canAdvance = allReadyForPhase(lobby, "buy") && overLimitTeams.length === 0;
   const [shopTab, setShopTab] = useState("units");
   const [unitFilter, setUnitFilter] = useState("cost");
+  const stockShopItems = shopItemEntries(game);
+  const marketShopItems = groupedMarketItemsArray(game);
   const inventory = getTeamInventory(game, player.team);
   const currentGold = game.gold?.[player.team] ?? 0;
   const inventoryUsed = inventory.filter(Boolean).length;
