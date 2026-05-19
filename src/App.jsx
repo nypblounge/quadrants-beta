@@ -261,6 +261,11 @@ function loadGameContentPack() {
 const GAME_CONTENT_PACK = loadGameContentPack();
 
 const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, centerSize: 5, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, npcSpawnSettings: {}, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
+const MATCH_ANALYTICS_SCHEMA_VERSION = 1;
+const MATCH_ANALYTICS_SNAPSHOT_SECONDS = 30;
+const MATCH_ANALYTICS_MAX_SNAPSHOTS = 80;
+const MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT = 180;
+
 const CPU_PLAYER_PREFIX = "cpu_";
 const CPU_READY_TEXT = "CPU ready";
 const BASE_ZONE_SIZE = 3;
@@ -3557,6 +3562,180 @@ function targetForUnit(unit, game, bases, units, respawnQueue) {
   return baseTargets[0] ?? combatTargets[0] ?? null;
 }
 
+
+function analyticsRound(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.round(number * 100) / 100;
+}
+
+function analyticsItemId(entry) {
+  if (!entry) return null;
+  const item = itemById(entry);
+  return item?.id || (typeof entry === "string" ? entry : entry.itemId || entry.id || null);
+}
+
+function compactAnalyticsEquipment(equipment = {}) {
+  const normalized = { ...makeDefaultEquipment(), ...(equipment || {}) };
+  const out = {};
+  for (const slot of EQUIPMENT_SLOTS) {
+    const itemId = analyticsItemId(normalized[slot]);
+    if (!itemId) continue;
+    const item = itemById(itemId);
+    out[slot] = {
+      itemId,
+      name: item?.name || itemId,
+      type: item?.type || "gear",
+      tags: Array.isArray(item?.tags) ? item.tags.slice(0, 8) : [],
+    };
+  }
+  return out;
+}
+
+function compactAnalyticsInventory(game, team) {
+  return getTeamInventory(game, team)
+    .filter(Boolean)
+    .map((entry) => {
+      const itemId = analyticsItemId(entry);
+      const item = itemById(itemId);
+      return itemId ? { itemId, name: item?.name || itemId, qty: itemQuantity(entry) } : null;
+    })
+    .filter(Boolean)
+    .slice(0, INVENTORY_SIZE);
+}
+
+function compactAnalyticsUnit(unit, source = "active") {
+  if (!unit || typeof unit !== "object") return null;
+  const stats = {};
+  for (const stat of STAT_KEYS) stats[stat] = analyticsRound(statLevel(unit, stat), 1);
+  return {
+    id: String(unit.id || "").slice(0, 80),
+    name: String(unit.name || STYLE[unit.style]?.name || unit.id || "Unit").slice(0, 80),
+    team: String(unit.team || "").slice(0, 24),
+    role: unit.team === "npc" ? "npc" : "unit",
+    source,
+    style: String(unit.style || "").slice(0, 48),
+    styleName: String(STYLE[unit.style]?.name || unit.style || "").slice(0, 80),
+    attackStyle: effectiveAttackStyleId(unit),
+    row: Number.isFinite(Number(unit.row)) ? Math.round(Number(unit.row)) : null,
+    col: Number.isFinite(Number(unit.col)) ? Math.round(Number(unit.col)) : null,
+    hp: analyticsRound(unit.hp),
+    maxHp: analyticsRound(maxHp(unit)),
+    level: analyticsRound(unit.level, 1),
+    stats,
+    equipment: compactAnalyticsEquipment(unit.equipment),
+    activePrayers: Array.isArray(unit.activePrayers) ? unit.activePrayers.slice(0, 12) : [],
+    target: unit.targetOverride || defaultUnitTargetOverride(unit.style),
+    manualTargetType: unit.manualTargetType || null,
+    carryingFlagTeam: unit.carryingFlagTeam || null,
+    damage: analyticsRound(unit.totalDamage),
+    unitDamage: analyticsRound(unit.damageToUnits),
+    baseDamage: analyticsRound(unit.damageToBases),
+    kills: analyticsRound(unit.kills),
+    deaths: analyticsRound(unit.deathCount),
+    levelsGained: analyticsRound(unit.levelsGained),
+    attacksAttempted: analyticsRound(unit.attacksAttempted),
+    hitsLanded: analyticsRound(unit.hitsLanded),
+    lootGold: analyticsRound(unit.lootGold),
+    hillUncontestedTime: analyticsRound(unit.hillUncontestedTime),
+    hillContestedTime: analyticsRound(unit.hillContestedTime),
+  };
+}
+
+function compactAnalyticsBoard(board, setup, includeCells = false) {
+  if (!Array.isArray(board)) return { size: sizeOf(setup), typeCounts: {}, ownerCounts: {}, ownerTypeCounts: {}, cells: [] };
+  const typeCounts = {};
+  const ownerCounts = {};
+  const ownerTypeCounts = {};
+  const cells = [];
+  const active = new Set(activeTeams(setup));
+  for (const row of board) {
+    if (!Array.isArray(row)) continue;
+    for (const cell of row) {
+      if (!cell) continue;
+      const type = cell.type || "empty";
+      const owner = cell.owner || "neutral";
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+      ownerCounts[owner] = (ownerCounts[owner] || 0) + 1;
+      const ownerTypeKey = `${owner}:${type}`;
+      ownerTypeCounts[ownerTypeKey] = (ownerTypeCounts[ownerTypeKey] || 0) + 1;
+      if (includeCells && type !== "empty" && (active.has(owner) || owner === "neutral" || owner === "void")) {
+        cells.push({ row: cell.row, col: cell.col, owner, type });
+      }
+    }
+  }
+  return { size: sizeOf(setup), typeCounts, ownerCounts, ownerTypeCounts, cells };
+}
+
+function makeMatchAnalyticsSnapshot(game, label, options = {}) {
+  const setup = game?.setup || DEFAULT_SETUP;
+  const teams = activeTeams(setup);
+  const activeUnits = arrayFromObject(game?.units).map((unit) => compactAnalyticsUnit(unit, "active")).filter(Boolean);
+  const respawns = arrayFromObject(game?.respawnQueue).map((unit) => compactAnalyticsUnit(unit, "respawn")).filter(Boolean);
+  const archived = options.includeArchived ? arrayFromObject(game?.unitArchive).map((unit) => compactAnalyticsUnit(unit, "archived")).filter(Boolean) : [];
+  const allUnits = [...activeUnits, ...respawns, ...archived].slice(0, MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT);
+  return {
+    schemaVersion: MATCH_ANALYTICS_SCHEMA_VERSION,
+    label,
+    phase: options.phase || "fight",
+    capturedAt: Date.now(),
+    fightTime: analyticsRound(game?.fightTime),
+    simTick: analyticsRound(game?.simTick),
+    gameMode: setup.gameMode || "classic",
+    setup: {
+      players: Number(setup.players || teams.length),
+      gridSize: sizeOf(setup),
+      maxUnits: Number(setup.maxUnits || DEFAULT_SETUP.maxUnits),
+      matchTimeLimit: Number(setup.matchTimeLimit || 0),
+      startingGold: Number(setup.startingGold || DEFAULT_SETUP.startingGold),
+      npcSpawns: Boolean(setup.npcSpawns),
+      mapTemplate: setup.mapTemplate || "classic",
+    },
+    timers: {
+      fightTime: analyticsRound(game?.fightTime),
+      matchTimeLimit: Number(setup.matchTimeLimit || 0),
+      nextNpcSpawnAt: analyticsRound(game?.nextNpcSpawnAt),
+      nextNpcSpawnAtByStyle: game?.nextNpcSpawnAtByStyle || {},
+    },
+    teams: Object.fromEntries(teams.map((team) => [team, {
+      gold: analyticsRound(game?.gold?.[team]),
+      baseHp: analyticsRound(game?.bases?.[team]?.hp),
+      ctfScore: analyticsRound(game?.ctfScores?.[team]),
+      kothScore: analyticsRound(game?.kothScores?.[team]),
+      inventory: compactAnalyticsInventory(game, team),
+      activeUnits: activeUnits.filter((unit) => unit.team === team).length,
+      respawningUnits: respawns.filter((unit) => unit.team === team).length,
+    }])),
+    board: compactAnalyticsBoard(game?.board, setup, Boolean(options.includeBoard)),
+    unitCount: allUnits.filter((unit) => unit.role !== "npc").length,
+    npcCount: allUnits.filter((unit) => unit.role === "npc").length,
+    units: allUnits,
+    npcSpawnedTotals: game?.npcSpawnedTotals || {},
+    npcRespawnTotals: game?.npcRespawnTotals || {},
+  };
+}
+
+function appendMatchAnalyticsSnapshot(game, label, options = {}) {
+  if (!game || typeof game !== "object") return game;
+  const snapshot = makeMatchAnalyticsSnapshot(game, label, options);
+  const snapshots = Array.isArray(game.matchAnalyticsSnapshots) ? game.matchAnalyticsSnapshots : [];
+  const dedupeKey = `${snapshot.label}|${snapshot.phase}|${Math.round(Number(snapshot.fightTime || 0))}`;
+  const filtered = snapshots.filter((entry) => `${entry?.label}|${entry?.phase}|${Math.round(Number(entry?.fightTime || 0))}` !== dedupeKey);
+  return {
+    ...game,
+    matchAnalyticsSnapshots: [...filtered, snapshot].slice(-MATCH_ANALYTICS_MAX_SNAPSHOTS),
+    lastAnalyticsSnapshotAt: snapshot.fightTime,
+  };
+}
+
+function maybeAppendTimedFightAnalyticsSnapshot(nextGame, previousGame) {
+  const previousBucket = Math.floor(Number(previousGame?.fightTime || 0) / MATCH_ANALYTICS_SNAPSHOT_SECONDS);
+  const nextBucket = Math.floor(Number(nextGame?.fightTime || 0) / MATCH_ANALYTICS_SNAPSHOT_SECONDS);
+  if (nextBucket <= previousBucket) return nextGame;
+  const secondMark = nextBucket * MATCH_ANALYTICS_SNAPSHOT_SECONDS;
+  return appendMatchAnalyticsSnapshot(nextGame, `fight_${secondMark}s`, { phase: "fight", includeBoard: false });
+}
+
 function summarizeResults(game, reason) {
   const setup = game.setup;
   const teams = activeTeams(setup);
@@ -3620,6 +3799,8 @@ function summarizeResults(game, reason) {
     topLevels,
     topHill,
     allUnits,
+    analyticsSnapshots: Array.isArray(game.matchAnalyticsSnapshots) ? game.matchAnalyticsSnapshots : [],
+    analyticsSnapshotCount: Array.isArray(game.matchAnalyticsSnapshots) ? game.matchAnalyticsSnapshots.length : 0,
   };
 }
 
@@ -7378,13 +7559,16 @@ export default function QuadrantsOnline() {
           return;
         }
       if (allVoteEndYes(latest)) {
-        const results = summarizeResults(latest.game, "vote to end");
+        const gameWithFinalSnapshot = appendMatchAnalyticsSnapshot(latest.game, "final", { phase: "results", includeBoard: true, includeArchived: true });
+        const results = summarizeResults(gameWithFinalSnapshot, "vote to end");
         await update(ref(db, `lobbies/${lobbyCode}`), {
           phase: "results",
           voteEnd: {},
           resyncVote: {},
           "game/results": results,
           "game/finished": true,
+          "game/matchAnalyticsSnapshots": gameWithFinalSnapshot.matchAnalyticsSnapshots,
+          "game/lastAnalyticsSnapshotAt": gameWithFinalSnapshot.lastAnalyticsSnapshotAt,
           "game/log": [`Fight ended by unanimous vote: ${results.winner || "Draw"}.`, ...(latest.game.log || [])].slice(0, 8),
         });
         return;
@@ -7396,32 +7580,36 @@ export default function QuadrantsOnline() {
       // counters to sometimes not be written to the shared store.
       const previousGameSnapshot = latest.game || {};
       const simulationGame = JSON.parse(JSON.stringify(previousGameSnapshot || {}));
-      const nextGame = stepGame(simulationGame, TICK_SECONDS);
+      let nextGame = stepGame(simulationGame, TICK_SECONDS);
+      nextGame = maybeAppendTimedFightAnalyticsSnapshot(nextGame, previousGameSnapshot);
       if (nextGame.finished) {
-        const results = nextGame.results || summarizeResults(nextGame, "last combat presence");
+        const gameWithFinalSnapshot = appendMatchAnalyticsSnapshot(nextGame, "final", { phase: "results", includeBoard: true, includeArchived: true });
+        const results = summarizeResults(gameWithFinalSnapshot, nextGame.results?.reason || "last combat presence");
         await update(ref(db, `lobbies/${lobbyCode}`), {
           phase: "results",
           "game/results": results,
           "game/finished": true,
-          "game/units": nextGame.units,
-          "game/respawnQueue": nextGame.respawnQueue,
-          "game/unitArchive": nextGame.unitArchive,
-          "game/board": nextGame.board,
-          "game/bases": nextGame.bases,
-          "game/ctfScores": nextGame.ctfScores,
-          "game/kothScores": nextGame.kothScores,
-          "game/kothController": nextGame.kothController,
-          "game/gold": nextGame.gold,
-          "game/loot": nextGame.loot,
-          "game/nextNpcSpawnAt": nextGame.nextNpcSpawnAt,
-          "game/nextNpcSpawnAtByStyle": nextGame.nextNpcSpawnAtByStyle,
-          "game/npcSpawnedTotals": nextGame.npcSpawnedTotals || {},
-          "game/npcRespawnTotals": nextGame.npcRespawnTotals || {},
-          "game/killFeed": nextGame.killFeed,
-          "game/splats": nextGame.splats,
-          "game/effects": nextGame.effects,
-          "game/groundItems": nextGame.groundItems,
-          "game/fightTime": nextGame.fightTime,
+          "game/units": gameWithFinalSnapshot.units,
+          "game/respawnQueue": gameWithFinalSnapshot.respawnQueue,
+          "game/unitArchive": gameWithFinalSnapshot.unitArchive,
+          "game/board": gameWithFinalSnapshot.board,
+          "game/bases": gameWithFinalSnapshot.bases,
+          "game/ctfScores": gameWithFinalSnapshot.ctfScores,
+          "game/kothScores": gameWithFinalSnapshot.kothScores,
+          "game/kothController": gameWithFinalSnapshot.kothController,
+          "game/gold": gameWithFinalSnapshot.gold,
+          "game/loot": gameWithFinalSnapshot.loot,
+          "game/nextNpcSpawnAt": gameWithFinalSnapshot.nextNpcSpawnAt,
+          "game/nextNpcSpawnAtByStyle": gameWithFinalSnapshot.nextNpcSpawnAtByStyle,
+          "game/npcSpawnedTotals": gameWithFinalSnapshot.npcSpawnedTotals || {},
+          "game/npcRespawnTotals": gameWithFinalSnapshot.npcRespawnTotals || {},
+          "game/killFeed": gameWithFinalSnapshot.killFeed,
+          "game/splats": gameWithFinalSnapshot.splats,
+          "game/effects": gameWithFinalSnapshot.effects,
+          "game/groundItems": gameWithFinalSnapshot.groundItems,
+          "game/matchAnalyticsSnapshots": gameWithFinalSnapshot.matchAnalyticsSnapshots,
+          "game/lastAnalyticsSnapshotAt": gameWithFinalSnapshot.lastAnalyticsSnapshotAt,
+          "game/fightTime": gameWithFinalSnapshot.fightTime,
           "game/lastSimTickAt": now,
           "game/simTick": Number(previousGameSnapshot?.simTick || 0) + 1,
           "game/log": [`Fight ended: ${results.winner || "Draw"}.`, ...(nextGame.log || [])].slice(0, 8),
@@ -7450,6 +7638,8 @@ export default function QuadrantsOnline() {
         patchIfChanged(gamePatch, previousGame, "splats", nextGame.splats);
         patchIfChanged(gamePatch, previousGame, "effects", nextGame.effects);
         patchIfChanged(gamePatch, previousGame, "groundItems", nextGame.groundItems);
+        patchIfChanged(gamePatch, previousGame, "matchAnalyticsSnapshots", nextGame.matchAnalyticsSnapshots);
+        patchIfChanged(gamePatch, previousGame, "lastAnalyticsSnapshotAt", nextGame.lastAnalyticsSnapshotAt);
         patchIfChanged(gamePatch, previousGame, "log", nextGame.log);
         if (nextGame._boardDirty) gamePatch.board = nextGame.board;
         await update(ref(db, `lobbies/${lobbyCode}/game`), gamePatch);
@@ -7832,13 +8022,15 @@ export default function QuadrantsOnline() {
     if (!lobby || !isHost) return;
     if (!allReadyForPhase(lobby, "build") || !allTeamsConnectedToCenter(lobby.game.board, lobby.game.setup)) return;
     const finalizedBoard = finalizeBuildTerrain(lobby.game.board, lobby.game.setup);
-    const preparedGame = ensureCpuRosters({ ...lobby.game, board: finalizedBoard }, lobby);
+    const preparedGame = appendMatchAnalyticsSnapshot(ensureCpuRosters({ ...lobby.game, board: finalizedBoard }, lobby), "build_complete", { phase: "buy", includeBoard: true });
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "buy",
       "ready/buy": {},
       "game/board": preparedGame.board,
       "game/units": preparedGame.units,
       "game/gold": preparedGame.gold,
+      "game/matchAnalyticsSnapshots": preparedGame.matchAnalyticsSnapshots,
+      "game/lastAnalyticsSnapshotAt": preparedGame.lastAnalyticsSnapshotAt,
       "game/log": ["Buy Phase started. Empty void tiles were filled with random water, trees, and rocks for free. CPU teams auto-buy a basic roster.", "Buy units, name them, choose targets, and finalize.", ...(lobby.game.log || [])].slice(0, 8),
       updatedAt: Date.now(),
       lastActivityAt: Date.now(),
@@ -7857,26 +8049,51 @@ export default function QuadrantsOnline() {
       return;
     }
     const finalizedBoard = finalizeBuildTerrain(lobby.game.board, lobby.game.setup);
+    const initialKothScores = Object.fromEntries(activeTeams(lobby.game.setup).map((team) => [team, 0]));
+    const initialNextNpcSpawnAtByStyle = initialNpcSpawnSchedule(lobby.game.setup);
+    const fightUnits = staggerUnitsForFightStart(units);
+    const fightGame = appendMatchAnalyticsSnapshot({
+      ...preparedGame,
+      board: finalizedBoard,
+      gold: preparedGame.gold,
+      fightTime: 0,
+      simTick: 0,
+      respawnQueue: {},
+      unitArchive: {},
+      groundItems: {},
+      killFeed: [],
+      splats: {},
+      effects: {},
+      kothScores: initialKothScores,
+      kothController: null,
+      nextNpcSpawnAt: npcSpawnConfigs(lobby.game.setup)[0]?.interval ?? NPC_SPAWN_INTERVAL,
+      nextNpcSpawnAtByStyle: initialNextNpcSpawnAtByStyle,
+      npcSpawnedTotals: {},
+      npcRespawnTotals: {},
+      units: fightUnits,
+    }, "fight_start", { phase: "fight", includeBoard: true });
     await update(ref(db, `lobbies/${lobbyCode}`), {
       phase: "fight",
-      "game/board": finalizedBoard,
-      "game/gold": preparedGame.gold,
-      "game/fightTime": 0,
+      "game/board": fightGame.board,
+      "game/gold": fightGame.gold,
+      "game/fightTime": fightGame.fightTime,
       "game/lastSimTickAt": Date.now(),
-      "game/simTick": 0,
-      "game/respawnQueue": {},
-      "game/unitArchive": {},
-      "game/groundItems": {},
-      "game/killFeed": [],
-      "game/splats": {},
-      "game/effects": {},
-      "game/kothScores": Object.fromEntries(activeTeams(lobby.game.setup).map((team) => [team, 0])),
-      "game/kothController": null,
-      "game/nextNpcSpawnAt": npcSpawnConfigs(lobby.game.setup)[0]?.interval ?? NPC_SPAWN_INTERVAL,
-      "game/nextNpcSpawnAtByStyle": initialNpcSpawnSchedule(lobby.game.setup),
-      "game/npcSpawnedTotals": {},
-      "game/npcRespawnTotals": {},
-      "game/units": staggerUnitsForFightStart(units),
+      "game/simTick": fightGame.simTick,
+      "game/respawnQueue": fightGame.respawnQueue,
+      "game/unitArchive": fightGame.unitArchive,
+      "game/groundItems": fightGame.groundItems,
+      "game/killFeed": fightGame.killFeed,
+      "game/splats": fightGame.splats,
+      "game/effects": fightGame.effects,
+      "game/kothScores": fightGame.kothScores,
+      "game/kothController": fightGame.kothController,
+      "game/nextNpcSpawnAt": fightGame.nextNpcSpawnAt,
+      "game/nextNpcSpawnAtByStyle": fightGame.nextNpcSpawnAtByStyle,
+      "game/npcSpawnedTotals": fightGame.npcSpawnedTotals,
+      "game/npcRespawnTotals": fightGame.npcRespawnTotals,
+      "game/units": fightGame.units,
+      "game/matchAnalyticsSnapshots": fightGame.matchAnalyticsSnapshots,
+      "game/lastAnalyticsSnapshotAt": fightGame.lastAnalyticsSnapshotAt,
       voteEnd: {},
       resyncVote: {},
       "game/log": [`${GAME_MODES[lobby.game.setup.gameMode || "classic"]?.name || "Fight"} started. Host browser simulates combat; host migration continues if host disconnects.`, ...(lobby.game.log || [])].slice(0, 8),
