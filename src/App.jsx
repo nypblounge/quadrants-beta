@@ -261,7 +261,7 @@ function loadGameContentPack() {
 const GAME_CONTENT_PACK = loadGameContentPack();
 
 const DEFAULT_SETUP = { players: 2, gridSize: 17, startingGold: 350, maxUnits: 12, baseHp: 250, baseZoneSize: 3, centerSize: 5, matchTimeLimit: 30 * 60, gameMode: "classic", mapTemplate: "classic", ctfScoreLimit: 3, kothTimeLimit: 60, npcSpawns: false, npcSpawnAmount: 1, npcSpawnInterval: 60, goblinSpawnAmount: 1, goblinSpawnInterval: 60, hillGiantSpawnAmount: 0, hillGiantSpawnInterval: 120, npcSpawnSettings: {}, teamMode: false, restockGoldOnContinued: false, continuedRestockGold: 150 };
-const MATCH_ANALYTICS_SCHEMA_VERSION = 1;
+const MATCH_ANALYTICS_SCHEMA_VERSION = 2;
 const MATCH_ANALYTICS_SNAPSHOT_SECONDS = 30;
 const MATCH_ANALYTICS_MAX_SNAPSHOTS = 80;
 const MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT = 180;
@@ -3563,6 +3563,7 @@ function targetForUnit(unit, game, bases, units, respawnQueue) {
 }
 
 
+
 function analyticsRound(value, fallback = 0) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -3573,6 +3574,37 @@ function analyticsItemId(entry) {
   if (!entry) return null;
   const item = itemById(entry);
   return item?.id || (typeof entry === "string" ? entry : entry.itemId || entry.id || null);
+}
+
+function analyticsAddCount(out, keyValue, amount = 1) {
+  const keyValueString = String(keyValue || "unknown");
+  out[keyValueString] = analyticsRound((out[keyValueString] || 0) + amount);
+}
+
+function analyticsRatio(numerator, denominator, fallback = 0) {
+  const den = Number(denominator);
+  if (!Number.isFinite(den) || den <= 0) return fallback;
+  return analyticsRound(Number(numerator || 0) / den);
+}
+
+function analyticsAverage(values, fallback = 0) {
+  const list = (Array.isArray(values) ? values : []).map(Number).filter(Number.isFinite);
+  if (!list.length) return fallback;
+  return analyticsRound(list.reduce((sum, value) => sum + value, 0) / list.length);
+}
+
+function estimatedRespawnDurationForDeathCount(deathCount = 0) {
+  const deaths = Math.max(0, Math.round(Number(deathCount) || 0));
+  if (!deaths) return 0;
+  return RESPAWN_BASE_TIME + deaths * 3 + deaths * deaths;
+}
+
+function averageEstimatedRespawnDurationForDeaths(deathCount = 0) {
+  const deaths = Math.max(0, Math.round(Number(deathCount) || 0));
+  if (!deaths) return 0;
+  let total = 0;
+  for (let death = 1; death <= deaths; death++) total += estimatedRespawnDurationForDeathCount(death);
+  return analyticsRound(total / deaths);
 }
 
 function compactAnalyticsEquipment(equipment = {}) {
@@ -3592,6 +3624,10 @@ function compactAnalyticsEquipment(equipment = {}) {
   return out;
 }
 
+function analyticsEquipmentIds(equipment = {}) {
+  return Object.values(compactAnalyticsEquipment(equipment)).map((entry) => entry.itemId).filter(Boolean).sort();
+}
+
 function compactAnalyticsInventory(game, team) {
   return getTeamInventory(game, team)
     .filter(Boolean)
@@ -3604,51 +3640,339 @@ function compactAnalyticsInventory(game, team) {
     .slice(0, INVENTORY_SIZE);
 }
 
-function compactAnalyticsUnit(unit, source = "active") {
+function analyticsUnitOnBoard(unit, setup = DEFAULT_SETUP) {
+  if (!unit || !Number.isFinite(Number(unit.row)) || !Number.isFinite(Number(unit.col))) return false;
+  const size = sizeOf(setup);
+  return Number(unit.row) >= 0 && Number(unit.row) < size && Number(unit.col) >= 0 && Number(unit.col) < size;
+}
+
+function analyticsUnitAlive(unit) {
+  return Number(unit?.hp ?? 0) > 0;
+}
+
+function compactAnalyticsFootprint(unit, setup = DEFAULT_SETUP) {
+  if (!analyticsUnitOnBoard(unit, setup)) return [];
+  const size = sizeOf(setup);
+  return unitFootprint(unit)
+    .filter((cell) => cell.row >= 0 && cell.row < size && cell.col >= 0 && cell.col < size)
+    .map((cell) => ({ row: cell.row, col: cell.col }));
+}
+
+function compactAnalyticsUnit(unit, source = "active", options = {}) {
   if (!unit || typeof unit !== "object") return null;
+  const setup = options.setup || DEFAULT_SETUP;
+  const fightTime = Number(options.fightTime || 0);
   const stats = {};
   for (const stat of STAT_KEYS) stats[stat] = analyticsRound(statLevel(unit, stat), 1);
+  const equipment = compactAnalyticsEquipment(unit.equipment);
+  const equipmentIds = Object.values(equipment).map((entry) => entry.itemId).filter(Boolean).sort();
+  const deaths = analyticsRound(unit.deathCount);
+  const damage = analyticsRound(unit.totalDamage);
+  const live = analyticsUnitAlive(unit) && analyticsUnitOnBoard(unit, setup) && source === "active";
+  const respawning = source === "respawn";
+  const respawnRemaining = respawning ? analyticsRound(unit.timer) : 0;
+  const estimatedRespawnDuration = respawning ? estimatedRespawnDurationForDeathCount(unit.deathCount) : 0;
   return {
     id: String(unit.id || "").slice(0, 80),
     name: String(unit.name || STYLE[unit.style]?.name || unit.id || "Unit").slice(0, 80),
     team: String(unit.team || "").slice(0, 24),
     role: unit.team === "npc" ? "npc" : "unit",
     source,
+    state: live ? "live" : respawning ? "respawning" : source === "archived" ? "archived" : analyticsUnitAlive(unit) ? "active_off_board" : "dead",
+    isLiveOnBoard: live,
+    isRespawning: respawning,
     style: String(unit.style || "").slice(0, 48),
     styleName: String(STYLE[unit.style]?.name || unit.style || "").slice(0, 80),
     attackStyle: effectiveAttackStyleId(unit),
+    combatType: combatType(effectiveAttackStyleId(unit)),
+    size: unitSize(unit),
     row: Number.isFinite(Number(unit.row)) ? Math.round(Number(unit.row)) : null,
     col: Number.isFinite(Number(unit.col)) ? Math.round(Number(unit.col)) : null,
+    footprint: options.includeFootprint === false ? undefined : compactAnalyticsFootprint(unit, setup),
     hp: analyticsRound(unit.hp),
     maxHp: analyticsRound(maxHp(unit)),
+    hpPct: analyticsRatio(unit.hp, maxHp(unit)),
     level: analyticsRound(unit.level, 1),
     stats,
-    equipment: compactAnalyticsEquipment(unit.equipment),
+    equipment,
+    equipmentIds,
+    equipmentSignature: equipmentIds.length ? equipmentIds.join("+") : "none",
     activePrayers: Array.isArray(unit.activePrayers) ? unit.activePrayers.slice(0, 12) : [],
     target: unit.targetOverride || defaultUnitTargetOverride(unit.style),
     manualTargetType: unit.manualTargetType || null,
+    manualTargetUnitId: unit.manualTargetUnitId || null,
     carryingFlagTeam: unit.carryingFlagTeam || null,
-    damage: analyticsRound(unit.totalDamage),
+    damage,
     unitDamage: analyticsRound(unit.damageToUnits),
     baseDamage: analyticsRound(unit.damageToBases),
+    damagePerMinute: fightTime > 0 ? analyticsRound(damage / Math.max(1 / 60, fightTime / 60)) : 0,
     kills: analyticsRound(unit.kills),
-    deaths: analyticsRound(unit.deathCount),
+    deaths,
     levelsGained: analyticsRound(unit.levelsGained),
     attacksAttempted: analyticsRound(unit.attacksAttempted),
     hitsLanded: analyticsRound(unit.hitsLanded),
+    accuracy: analyticsRound(100 * Number(unit.hitsLanded || 0) / Math.max(1, Number(unit.attacksAttempted || 0))),
+    resourcesCleared: analyticsRound(unit.resourcesCleared),
     lootGold: analyticsRound(unit.lootGold),
+    respawnRemaining,
+    estimatedRespawnDuration,
+    averageEstimatedRespawnDuration: averageEstimatedRespawnDurationForDeaths(unit.deathCount),
     hillUncontestedTime: analyticsRound(unit.hillUncontestedTime),
     hillContestedTime: analyticsRound(unit.hillContestedTime),
   };
 }
 
+function analyticsTeamBasePoint(team, setup) {
+  try { return baseOf(team, setup); } catch (err) { return null; }
+}
+
+function analyticsHillPoint(setup) {
+  const size = sizeOf(setup);
+  const center = Math.floor(size / 2);
+  return { row: center, col: center };
+}
+
+function analyticsManhattan(a, b) {
+  if (!a || !b || !Number.isFinite(Number(a.row)) || !Number.isFinite(Number(a.col)) || !Number.isFinite(Number(b.row)) || !Number.isFinite(Number(b.col))) return null;
+  return Math.abs(Number(a.row) - Number(b.row)) + Math.abs(Number(a.col) - Number(b.col));
+}
+
+function makeAnalyticsAggregate() {
+  return {
+    count: 0,
+    live: 0,
+    respawning: 0,
+    archived: 0,
+    npc: 0,
+    totalDamage: 0,
+    unitDamage: 0,
+    baseDamage: 0,
+    kills: 0,
+    deaths: 0,
+    levelsGained: 0,
+    attacksAttempted: 0,
+    hitsLanded: 0,
+    resourcesCleared: 0,
+    lootGold: 0,
+    totalRespawnRemaining: 0,
+    totalEstimatedRespawnDuration: 0,
+    respawnSamples: 0,
+    styleCounts: {},
+    combatTypeCounts: {},
+    equipmentCounts: {},
+    equipmentComboCounts: {},
+  };
+}
+
+function addUnitToAnalyticsAggregate(aggregate, unit) {
+  if (!unit) return aggregate;
+  aggregate.count += 1;
+  if (unit.isLiveOnBoard) aggregate.live += 1;
+  if (unit.isRespawning) aggregate.respawning += 1;
+  if (unit.source === "archived") aggregate.archived += 1;
+  if (unit.role === "npc") aggregate.npc += 1;
+  aggregate.totalDamage += Number(unit.damage || 0);
+  aggregate.unitDamage += Number(unit.unitDamage || 0);
+  aggregate.baseDamage += Number(unit.baseDamage || 0);
+  aggregate.kills += Number(unit.kills || 0);
+  aggregate.deaths += Number(unit.deaths || 0);
+  aggregate.levelsGained += Number(unit.levelsGained || 0);
+  aggregate.attacksAttempted += Number(unit.attacksAttempted || 0);
+  aggregate.hitsLanded += Number(unit.hitsLanded || 0);
+  aggregate.resourcesCleared += Number(unit.resourcesCleared || 0);
+  aggregate.lootGold += Number(unit.lootGold || 0);
+  if (unit.isRespawning) {
+    aggregate.totalRespawnRemaining += Number(unit.respawnRemaining || 0);
+    aggregate.totalEstimatedRespawnDuration += Number(unit.estimatedRespawnDuration || 0);
+    aggregate.respawnSamples += 1;
+  }
+  if (Number(unit.deaths || 0) > 0) {
+    aggregate.totalEstimatedRespawnDuration += Number(unit.averageEstimatedRespawnDuration || 0);
+    aggregate.respawnSamples += 1;
+  }
+  analyticsAddCount(aggregate.styleCounts, unit.style || "unknown");
+  analyticsAddCount(aggregate.combatTypeCounts, unit.combatType || "unknown");
+  for (const itemId of unit.equipmentIds || []) analyticsAddCount(aggregate.equipmentCounts, itemId);
+  analyticsAddCount(aggregate.equipmentComboCounts, unit.equipmentSignature || "none");
+  return aggregate;
+}
+
+function finalizeAnalyticsAggregate(aggregate, fightTime = 0) {
+  const count = Math.max(0, Number(aggregate.count || 0));
+  return {
+    count,
+    live: Math.max(0, Number(aggregate.live || 0)),
+    respawning: Math.max(0, Number(aggregate.respawning || 0)),
+    archived: Math.max(0, Number(aggregate.archived || 0)),
+    npc: Math.max(0, Number(aggregate.npc || 0)),
+    totalDamage: analyticsRound(aggregate.totalDamage),
+    unitDamage: analyticsRound(aggregate.unitDamage),
+    baseDamage: analyticsRound(aggregate.baseDamage),
+    averageDamagePerKnownUnit: analyticsRatio(aggregate.totalDamage, count),
+    averageDamagePerLiveUnit: analyticsRatio(aggregate.totalDamage, aggregate.live),
+    damagePerMinute: fightTime > 0 ? analyticsRound(Number(aggregate.totalDamage || 0) / Math.max(1 / 60, fightTime / 60)) : 0,
+    kills: analyticsRound(aggregate.kills),
+    deaths: analyticsRound(aggregate.deaths),
+    levelsGained: analyticsRound(aggregate.levelsGained),
+    attacksAttempted: analyticsRound(aggregate.attacksAttempted),
+    hitsLanded: analyticsRound(aggregate.hitsLanded),
+    accuracy: analyticsRound(100 * Number(aggregate.hitsLanded || 0) / Math.max(1, Number(aggregate.attacksAttempted || 0))),
+    resourcesCleared: analyticsRound(aggregate.resourcesCleared),
+    lootGold: analyticsRound(aggregate.lootGold),
+    averageRespawnRemaining: analyticsRatio(aggregate.totalRespawnRemaining, aggregate.respawning),
+    averageEstimatedRespawnDuration: analyticsRatio(aggregate.totalEstimatedRespawnDuration, aggregate.respawnSamples),
+    styleCounts: aggregate.styleCounts,
+    combatTypeCounts: aggregate.combatTypeCounts,
+    equipmentCounts: aggregate.equipmentCounts,
+    equipmentComboCounts: aggregate.equipmentComboCounts,
+  };
+}
+
+function analyticsGroupUnits(units, keyFn, fightTime = 0) {
+  const groups = {};
+  for (const unit of units || []) {
+    const groupKey = String(keyFn(unit) || "unknown");
+    if (!groups[groupKey]) groups[groupKey] = makeAnalyticsAggregate();
+    addUnitToAnalyticsAggregate(groups[groupKey], unit);
+  }
+  return Object.fromEntries(Object.entries(groups).map(([groupKey, aggregate]) => [groupKey, finalizeAnalyticsAggregate(aggregate, fightTime)]));
+}
+
+function analyticsEquipmentPerformance(units, fightTime = 0) {
+  const groups = {};
+  for (const unit of units || []) {
+    const itemIds = Array.isArray(unit.equipmentIds) && unit.equipmentIds.length ? unit.equipmentIds : ["none"];
+    for (const itemId of itemIds) {
+      if (!groups[itemId]) groups[itemId] = makeAnalyticsAggregate();
+      addUnitToAnalyticsAggregate(groups[itemId], unit);
+    }
+  }
+  return Object.fromEntries(Object.entries(groups).map(([itemId, aggregate]) => [itemId, finalizeAnalyticsAggregate(aggregate, fightTime)]));
+}
+
+function analyticsTeamPositionMetrics(units, setup) {
+  const teams = activeTeams(setup);
+  const hill = analyticsHillPoint(setup);
+  const out = {};
+  for (const team of teams) {
+    const teamUnits = (units || []).filter((unit) => unit.team === team && unit.isLiveOnBoard);
+    const ownBase = analyticsTeamBasePoint(team, setup);
+    const hostileBases = activeTeams(setup).filter((other) => areHostileTeams(team, other, setup)).map((other) => analyticsTeamBasePoint(other, setup)).filter(Boolean);
+    const rows = teamUnits.map((unit) => Number(unit.row)).filter(Number.isFinite);
+    const cols = teamUnits.map((unit) => Number(unit.col)).filter(Number.isFinite);
+    const ownBaseDistances = teamUnits.map((unit) => analyticsManhattan(unit, ownBase)).filter(Number.isFinite);
+    const enemyBaseDistances = teamUnits.map((unit) => Math.min(...hostileBases.map((base) => analyticsManhattan(unit, base)).filter(Number.isFinite))).filter(Number.isFinite);
+    const hillDistances = teamUnits.map((unit) => analyticsManhattan(unit, hill)).filter(Number.isFinite);
+    out[team] = {
+      liveUnits: teamUnits.length,
+      centroid: rows.length ? { row: analyticsAverage(rows), col: analyticsAverage(cols) } : null,
+      avgDistanceToOwnBase: analyticsAverage(ownBaseDistances, null),
+      avgDistanceToEnemyBase: analyticsAverage(enemyBaseDistances, null),
+      avgDistanceToHill: analyticsAverage(hillDistances, null),
+    };
+  }
+  return out;
+}
+
+function analyticsConnectedAreas(board, setup, predicate, limit = 5) {
+  if (!Array.isArray(board)) return [];
+  const size = sizeOf(setup);
+  const seen = new Set();
+  const areas = [];
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      const start = board[row]?.[col];
+      const startKey = key(row, col);
+      if (!start || seen.has(startKey) || !predicate(start)) continue;
+      const queue = [{ row, col }];
+      const cells = [];
+      seen.add(startKey);
+      while (queue.length) {
+        const cur = queue.shift();
+        const cell = board[cur.row]?.[cur.col];
+        if (!cell) continue;
+        cells.push({ row: cur.row, col: cur.col, type: cell.type || "empty", owner: cell.owner || "neutral" });
+        for (const [dr, dc] of dirs) {
+          const nr = cur.row + dr;
+          const nc = cur.col + dc;
+          const nKey = key(nr, nc);
+          if (nr < 0 || nc < 0 || nr >= size || nc >= size || seen.has(nKey)) continue;
+          const next = board[nr]?.[nc];
+          if (!next || !predicate(next)) continue;
+          seen.add(nKey);
+          queue.push({ row: nr, col: nc });
+        }
+      }
+      const rows = cells.map((cell) => cell.row);
+      const cols = cells.map((cell) => cell.col);
+      areas.push({
+        size: cells.length,
+        bounds: { minRow: Math.min(...rows), maxRow: Math.max(...rows), minCol: Math.min(...cols), maxCol: Math.max(...cols) },
+        centroid: { row: analyticsAverage(rows), col: analyticsAverage(cols) },
+        sampleCells: cells.slice(0, 12),
+      });
+    }
+  }
+  return areas.sort((a, b) => b.size - a.size).slice(0, limit);
+}
+
+function analyticsNearestNeighborGaps(cells) {
+  const list = Array.isArray(cells) ? cells : [];
+  if (list.length < 2) return { largestNearestGap: 0, averageNearestGap: 0 };
+  const gaps = list.map((cell, index) => {
+    let best = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      if (i === index) continue;
+      best = Math.min(best, Math.abs(cell.row - list[i].row) + Math.abs(cell.col - list[i].col));
+    }
+    return best;
+  }).filter(Number.isFinite);
+  return {
+    largestNearestGap: gaps.length ? Math.max(...gaps) : 0,
+    averageNearestGap: analyticsAverage(gaps),
+  };
+}
+
+function analyticsTeamBuildMetrics(board, setup) {
+  const teams = activeTeams(setup);
+  const out = {};
+  for (const team of teams) {
+    const cells = [];
+    const typeCounts = {};
+    for (const row of board || []) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        if (!cell || cell.owner !== team) continue;
+        const type = cell.type || "empty";
+        cells.push({ row: cell.row, col: cell.col, type });
+        analyticsAddCount(typeCounts, type);
+      }
+    }
+    const roadCells = cells.filter((cell) => cell.type === "road");
+    const rows = cells.map((cell) => cell.row).filter(Number.isFinite);
+    const cols = cells.map((cell) => cell.col).filter(Number.isFinite);
+    out[team] = {
+      ownedCells: cells.length,
+      typeCounts,
+      roadCells: roadCells.length,
+      largestRoadPlacementGap: analyticsNearestNeighborGaps(roadCells).largestNearestGap,
+      averageRoadPlacementGap: analyticsNearestNeighborGaps(roadCells).averageNearestGap,
+      bounds: rows.length ? { minRow: Math.min(...rows), maxRow: Math.max(...rows), minCol: Math.min(...cols), maxCol: Math.max(...cols) } : null,
+      centroid: rows.length ? { row: analyticsAverage(rows), col: analyticsAverage(cols) } : null,
+    };
+  }
+  return out;
+}
+
 function compactAnalyticsBoard(board, setup, includeCells = false) {
-  if (!Array.isArray(board)) return { size: sizeOf(setup), typeCounts: {}, ownerCounts: {}, ownerTypeCounts: {}, cells: [] };
+  if (!Array.isArray(board)) return { size: sizeOf(setup), typeCounts: {}, ownerCounts: {}, ownerTypeCounts: {}, cells: [], largestGaps: [] };
   const typeCounts = {};
   const ownerCounts = {};
   const ownerTypeCounts = {};
   const cells = [];
   const active = new Set(activeTeams(setup));
+  const size = sizeOf(setup);
   for (const row of board) {
     if (!Array.isArray(row)) continue;
     for (const cell of row) {
@@ -3659,27 +3983,65 @@ function compactAnalyticsBoard(board, setup, includeCells = false) {
       ownerCounts[owner] = (ownerCounts[owner] || 0) + 1;
       const ownerTypeKey = `${owner}:${type}`;
       ownerTypeCounts[ownerTypeKey] = (ownerTypeCounts[ownerTypeKey] || 0) + 1;
-      if (includeCells && type !== "empty" && (active.has(owner) || owner === "neutral" || owner === "void")) {
-        cells.push({ row: cell.row, col: cell.col, owner, type });
+      if (includeCells && (active.has(owner) || owner === "neutral" || owner === "void")) {
+        const compactCell = { row: cell.row, col: cell.col, owner, type };
+        if (cell.resourceHp != null) compactCell.resourceHp = analyticsRound(cell.resourceHp);
+        if (cell.resourceMaxHp != null) compactCell.resourceMaxHp = analyticsRound(cell.resourceMaxHp);
+        if (cell.regrowType) compactCell.regrowType = cell.regrowType;
+        if (cell.regrowAt != null) compactCell.regrowAt = analyticsRound(cell.regrowAt);
+        cells.push(compactCell);
       }
     }
   }
-  return { size: sizeOf(setup), typeCounts, ownerCounts, ownerTypeCounts, cells };
+  const largestGaps = analyticsConnectedAreas(board, setup, (cell) => !isBaseCell(cell.row, cell.col, setup) && cell.type !== "road", 5);
+  const largestRoadNetworks = analyticsConnectedAreas(board, setup, (cell) => walkable(cell, setup), 5);
+  return {
+    size,
+    typeCounts,
+    ownerCounts,
+    ownerTypeCounts,
+    cells,
+    teamBuildMetrics: analyticsTeamBuildMetrics(board, setup),
+    largestGaps,
+    largestRoadNetworks,
+  };
 }
 
 function makeMatchAnalyticsSnapshot(game, label, options = {}) {
   const setup = game?.setup || DEFAULT_SETUP;
   const teams = activeTeams(setup);
-  const activeUnits = arrayFromObject(game?.units).map((unit) => compactAnalyticsUnit(unit, "active")).filter(Boolean);
-  const respawns = arrayFromObject(game?.respawnQueue).map((unit) => compactAnalyticsUnit(unit, "respawn")).filter(Boolean);
-  const archived = options.includeArchived ? arrayFromObject(game?.unitArchive).map((unit) => compactAnalyticsUnit(unit, "archived")).filter(Boolean) : [];
-  const allUnits = [...activeUnits, ...respawns, ...archived].slice(0, MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT);
+  const fightTime = analyticsRound(game?.fightTime);
+  const compactOptions = { setup, fightTime, includeFootprint: Boolean(options.includeBoard) };
+  const activeRaw = arrayFromObject(game?.units);
+  const respawnRaw = arrayFromObject(game?.respawnQueue);
+  const archivedRaw = arrayFromObject(game?.unitArchive);
+  const liveUnits = activeRaw
+    .filter((unit) => analyticsUnitAlive(unit) && analyticsUnitOnBoard(unit, setup))
+    .map((unit) => compactAnalyticsUnit(unit, "active", compactOptions))
+    .filter(Boolean);
+  const activeOffBoardUnits = activeRaw
+    .filter((unit) => !(analyticsUnitAlive(unit) && analyticsUnitOnBoard(unit, setup)))
+    .map((unit) => compactAnalyticsUnit(unit, "active", compactOptions))
+    .filter(Boolean);
+  const respawns = respawnRaw.map((unit) => compactAnalyticsUnit(unit, "respawn", compactOptions)).filter(Boolean);
+  const archived = (options.includeArchived ? archivedRaw : []).map((unit) => compactAnalyticsUnit(unit, "archived", compactOptions)).filter(Boolean);
+  const knownRaw = mergeLatestUnits(options.includeArchived ? archivedRaw : [], respawnRaw, activeRaw);
+  const knownUnits = knownRaw.map((unit) => {
+    const source = activeRaw.some((activeUnit) => activeUnit?.id === unit?.id) ? "active" : respawnRaw.some((respawnUnit) => respawnUnit?.id === unit?.id) ? "respawn" : "archived";
+    return compactAnalyticsUnit(unit, source, compactOptions);
+  }).filter(Boolean).slice(0, MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT);
+  const playerLiveUnits = liveUnits.filter((unit) => unit.role !== "npc");
+  const liveNpcs = liveUnits.filter((unit) => unit.role === "npc");
+  const allSnapshotUnits = [...liveUnits, ...activeOffBoardUnits, ...respawns, ...archived].slice(0, MATCH_ANALYTICS_MAX_UNITS_PER_SNAPSHOT);
+  const knownPlayerUnits = knownUnits.filter((unit) => unit.role !== "npc");
+  const teamMetrics = analyticsGroupUnits(knownPlayerUnits, (unit) => unit.team, fightTime);
+  const liveTeamMetrics = analyticsGroupUnits(playerLiveUnits, (unit) => unit.team, fightTime);
   return {
     schemaVersion: MATCH_ANALYTICS_SCHEMA_VERSION,
     label,
     phase: options.phase || "fight",
     capturedAt: Date.now(),
-    fightTime: analyticsRound(game?.fightTime),
+    fightTime,
     simTick: analyticsRound(game?.simTick),
     gameMode: setup.gameMode || "classic",
     setup: {
@@ -3692,7 +4054,7 @@ function makeMatchAnalyticsSnapshot(game, label, options = {}) {
       mapTemplate: setup.mapTemplate || "classic",
     },
     timers: {
-      fightTime: analyticsRound(game?.fightTime),
+      fightTime,
       matchTimeLimit: Number(setup.matchTimeLimit || 0),
       nextNpcSpawnAt: analyticsRound(game?.nextNpcSpawnAt),
       nextNpcSpawnAtByStyle: game?.nextNpcSpawnAtByStyle || {},
@@ -3703,13 +4065,52 @@ function makeMatchAnalyticsSnapshot(game, label, options = {}) {
       ctfScore: analyticsRound(game?.ctfScores?.[team]),
       kothScore: analyticsRound(game?.kothScores?.[team]),
       inventory: compactAnalyticsInventory(game, team),
-      activeUnits: activeUnits.filter((unit) => unit.team === team).length,
+      liveUnits: playerLiveUnits.filter((unit) => unit.team === team).length,
       respawningUnits: respawns.filter((unit) => unit.team === team).length,
+      knownUnits: knownPlayerUnits.filter((unit) => unit.team === team).length,
+      styleCounts: teamMetrics[team]?.styleCounts || {},
+      liveStyleCounts: liveTeamMetrics[team]?.styleCounts || {},
+      averageDamagePerUnit: teamMetrics[team]?.averageDamagePerKnownUnit || 0,
+      averageRespawnDuration: teamMetrics[team]?.averageEstimatedRespawnDuration || 0,
     }])),
     board: compactAnalyticsBoard(game?.board, setup, Boolean(options.includeBoard)),
-    unitCount: allUnits.filter((unit) => unit.role !== "npc").length,
-    npcCount: allUnits.filter((unit) => unit.role === "npc").length,
-    units: allUnits,
+    counts: {
+      liveUnits: playerLiveUnits.length,
+      liveNpcs: liveNpcs.length,
+      respawningUnits: respawns.filter((unit) => unit.role !== "npc").length,
+      respawningNpcs: respawns.filter((unit) => unit.role === "npc").length,
+      activeOffBoardUnits: activeOffBoardUnits.filter((unit) => unit.role !== "npc").length,
+      archivedUnits: archived.filter((unit) => unit.role !== "npc").length,
+      knownUnits: knownPlayerUnits.length,
+      knownNpcs: knownUnits.filter((unit) => unit.role === "npc").length,
+    },
+    liveUnitCount: playerLiveUnits.length,
+    liveNpcCount: liveNpcs.length,
+    respawningUnitCount: respawns.filter((unit) => unit.role !== "npc").length,
+    knownUnitCount: knownPlayerUnits.length,
+    unitCount: playerLiveUnits.length,
+    npcCount: liveNpcs.length,
+    units: playerLiveUnits,
+    npcs: liveNpcs,
+    unitStates: {
+      live: liveUnits,
+      respawning: respawns,
+      activeOffBoard: activeOffBoardUnits,
+      archived,
+      known: knownUnits,
+    },
+    metrics: {
+      teamMetrics,
+      liveTeamMetrics,
+      stylePerformance: analyticsGroupUnits(knownPlayerUnits, (unit) => unit.style, fightTime),
+      liveStylePerformance: analyticsGroupUnits(playerLiveUnits, (unit) => unit.style, fightTime),
+      equipmentPerformance: analyticsEquipmentPerformance(knownPlayerUnits, fightTime),
+      equipmentComboPerformance: analyticsGroupUnits(knownPlayerUnits, (unit) => unit.equipmentSignature || "none", fightTime),
+      positionMetrics: analyticsTeamPositionMetrics(playerLiveUnits, setup),
+      averageDamagePerKnownUnit: analyticsAverage(knownPlayerUnits.map((unit) => unit.damage)),
+      averageDamagePerLiveUnit: analyticsAverage(playerLiveUnits.map((unit) => unit.damage)),
+      averageRespawnDuration: analyticsAverage(knownPlayerUnits.filter((unit) => Number(unit.deaths || 0) > 0).map((unit) => unit.averageEstimatedRespawnDuration)),
+    },
     npcSpawnedTotals: game?.npcSpawnedTotals || {},
     npcRespawnTotals: game?.npcRespawnTotals || {},
   };
